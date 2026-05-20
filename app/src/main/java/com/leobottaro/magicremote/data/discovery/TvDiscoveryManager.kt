@@ -1,14 +1,18 @@
 package com.leobottaro.magicremote.data.discovery
 
 import android.content.Context
-import android.net.nsd.NsdManager
-import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import java.net.Inet4Address
 import java.net.InetAddress
-import kotlin.coroutines.resume
+import java.net.NetworkInterface
+import javax.jmdns.JmDNS
+import javax.jmdns.ServiceEvent
+import javax.jmdns.ServiceListener
 
 data class TvDevice(
     val name: String,
@@ -18,97 +22,78 @@ data class TvDevice(
 
 class TvDiscoveryManager(private val context: Context) {
 
-    private val nsdManager: NsdManager =
-        context.getSystemService(Context.NSD_SERVICE) as NsdManager
-
-    private var isDiscovering = false
-
     /** Emit discovered TVs as a flow. Completes when discovery stops. */
     fun discoverTvs(): Flow<TvDevice> = callbackFlow {
-        isDiscovering = true
+        val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val multicastLock = wifiManager.createMulticastLock("jmdns-discovery")
+        multicastLock.acquire()
 
-        val resolveListener = object : NsdManager.ResolveListener {
-            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                // Skip unresolvable services
+        val jmdns = withContext(Dispatchers.IO) {
+            val localIp = resolveLocalIp()
+            if (localIp == null) {
+                close(Exception("No network interface found. Check WiFi connection."))
+                return@withContext null
+            }
+            JmDNS.create(localIp, "MagicRemote")
+        } ?: return@callbackFlow
+
+        val listener = object : ServiceListener {
+            override fun serviceAdded(event: ServiceEvent) {
+                jmdns.requestServiceInfo(event.type, event.name, true)
             }
 
-            override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+            override fun serviceRemoved(event: ServiceEvent) = Unit
+
+            override fun serviceResolved(event: ServiceEvent) {
+                val info = event.info
+                val host = info.inetAddresses.firstOrNull() ?: return
                 val device = TvDevice(
-                    name = serviceInfo.serviceName,
-                    host = serviceInfo.host ?: return,
-                    port = serviceInfo.port
+                    name = info.name.removeSuffix("."),
+                    host = host,
+                    port = info.port
                 )
                 trySend(device)
             }
         }
 
-        val discoveryListener = object : NsdManager.DiscoveryListener {
-            override fun onDiscoveryStarted(regType: String) = Unit
-            override fun onDiscoveryStopped(serviceType: String) = Unit
-
-            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-                close(Exception("Discovery failed: error $errorCode"))
-            }
-
-            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
-
-            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                // Resolve only Android TV remote services by name pattern
-                val name = serviceInfo.serviceName
-                if (name.contains("AndroidTV", ignoreCase = true) ||
-                    name.contains("GoogleTV", ignoreCase = true) ||
-                    name.contains("TV", ignoreCase = true) ||
-                    serviceInfo.serviceType.contains("androidtvremote")
-                ) {
-                    nsdManager.resolveService(serviceInfo, resolveListener)
-                }
-            }
-
-            override fun onServiceLost(serviceInfo: NsdServiceInfo) = Unit
-        }
-
-        nsdManager.discoverServices(
-            "_androidtvremote._tcp",
-            NsdManager.PROTOCOL_DNS_SD,
-            discoveryListener
-        )
+        jmdns.addServiceListener("_androidtvremote._tcp.local.", listener)
 
         awaitClose {
-            if (isDiscovering) {
-                try {
-                    nsdManager.stopServiceDiscovery(discoveryListener)
-                } catch (_: Exception) { }
-                isDiscovering = false
-            }
+            try {
+                jmdns.removeServiceListener("_androidtvremote._tcp.local.", listener)
+                jmdns.close()
+            } catch (_: Exception) { }
+            try {
+                multicastLock.release()
+            } catch (_: Exception) { }
         }
     }
 
-    /** Resolve a specific service to get its IP/port. */
-    suspend fun resolveService(serviceName: String): TvDevice? = suspendCancellableCoroutine { cont ->
-        val info = NsdServiceInfo().apply {
-            this.serviceName = serviceName
-            serviceType = "_androidtvremote._tcp"
+    private fun resolveLocalIp(): InetAddress? {
+        val interfaces = NetworkInterface.getNetworkInterfaces() ?: return null
+        while (interfaces.hasMoreElements()) {
+            val iface = interfaces.nextElement()
+            if (!iface.isUp || iface.isLoopback) continue
+            val addresses = iface.inetAddresses
+            while (addresses.hasMoreElements()) {
+                val addr = addresses.nextElement()
+                if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                    return addr
+                }
+            }
         }
-        nsdManager.resolveService(info, object : NsdManager.ResolveListener {
-            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                if (cont.isActive) cont.resume(null)
-            }
-
-            override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                val device = TvDevice(
-                    name = serviceInfo.serviceName,
-                    host = serviceInfo.host ?: run {
-                        if (cont.isActive) cont.resume(null)
-                        return
-                    },
-                    port = serviceInfo.port
-                )
-                if (cont.isActive) cont.resume(device)
-            }
-        })
+        return null
     }
 
-    fun stopDiscovery() {
-        // Flow's awaitClose handles cleanup
+    /** Quick TCP probe to verify a TV is reachable at the given address. */
+    suspend fun probeDevice(host: InetAddress, port: Int = 6467): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val socket = java.net.Socket()
+            socket.connect(java.net.InetSocketAddress(host, port), 2000)
+            socket.close()
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 }

@@ -1,15 +1,14 @@
 package com.leobottaro.magicremote.data.network
 
 import com.leobottaro.magicremote.data.certificate.CertificateManager
-import com.leobottaro.magicremote.data.protocol.MessageTypes
-import com.leobottaro.magicremote.data.protocol.PairingMessage
-import com.leobottaro.magicremote.data.protocol.readMessage
-import com.leobottaro.magicremote.data.protocol.writeMessage
+import com.leobottaro.magicremote.data.protocol.PairingEncoder
+import com.leobottaro.magicremote.data.protocol.readFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.net.InetAddress
+import java.security.cert.X509Certificate
 import javax.net.ssl.SSLSocket
 
 data class PairingResult(
@@ -23,96 +22,85 @@ class PairingClient(private val certificateManager: CertificateManager) {
     private var socket: SSLSocket? = null
     private var outputStream: DataOutputStream? = null
     private var inputStream: DataInputStream? = null
+    private var serverCertificate: X509Certificate? = null
 
-    /** Connect to the TV on the pairing port. */
-    suspend fun connect(host: InetAddress, port: Int = 6467): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val sslContext = certificateManager.createPairingSslContext()
-            val sock = sslContext.socketFactory.createSocket(host, port) as SSLSocket
-            // Explicitly enable all cipher suites in case the TV needs them
-            sock.enabledProtocols = arrayOf("TLSv1.2", "TLSv1.3")
-            sock.startHandshake()
-            socket = sock
-            outputStream = DataOutputStream(sock.outputStream)
-            inputStream = DataInputStream(sock.inputStream)
-            true
-        } catch (e: Exception) {
-            e.printStackTrace()
-            disconnect()
-            false
-        }
-    }
+    suspend fun performPairing(host: InetAddress, pin: String): PairingResult =
+        withContext(Dispatchers.IO) {
+            try {
+                // 1. Connect TLS to port 6467
+                connect(host)
 
-    /** Send the initial pairing request. */
-    suspend fun sendPairingRequest(): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val msg = PairingMessage(
-                protocolVersion = 2,
-                encoding = MessageTypes.PAIRING_ENCODING_PASSCODE,
-                pairingType = MessageTypes.PAIRING_TYPE_NEW,
-                clientName = "MagicRemote".toByteArray()
-            )
-            writeAndFlush(msg.encode())
-            true
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        }
-    }
+                // 2. Send client config (Message 1)
+                val configMsg = PairingEncoder.encodeClientConfig("MagicRemote", "MagicRemote")
+                writeAndFlush(configMsg)
 
-    /** Read the TV's pairing response (should contain the challenge / server info). */
-    suspend fun readPairingResponse(): PairingMessage? = withContext(Dispatchers.IO) {
-        try {
-            val data = readMessage(inputStream ?: return@withContext null) ?: return@withContext null
-            PairingMessage.decode(data)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
+                // 3. Read first ack — TV should respond with protocol_version + status + empty ack (field 11)
+                val ack1 = readFrame(inputStream ?: return@withContext error("No input stream"))
+                    ?: return@withContext error("Failed to read first ack")
 
-    /** Send the PIN displayed on the TV. */
-    suspend fun sendPin(pin: String): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val msg = PairingMessage(
-                protocolVersion = 2,
-                secret = pin.toByteArray(),
-                status = MessageTypes.PAIRING_STATUS_OK
-            )
-            writeAndFlush(msg.encode())
-            true
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        }
-    }
+                // 4. Send options (Message 2)
+                val optionsMsg = PairingEncoder.encodeOptions()
+                writeAndFlush(optionsMsg)
 
-    /** Send our client certificate to the TV. */
-    suspend fun sendClientCertificate(): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val clientCert = certificateManager.getClientCertificate() ?: return@withContext false
-            val msg = PairingMessage(
-                protocolVersion = 2,
-                status = MessageTypes.PAIRING_STATUS_OK,
-                clientCertificate = clientCert.encoded
-            )
-            writeAndFlush(msg.encode())
-            true
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        }
-    }
+                // 5. Read options ack
+                val ack2 = readFrame(inputStream ?: return@withContext error("No input stream"))
+                    ?: return@withContext error("Failed to read options ack")
 
-    /** Read the final pairing ack from the TV after receiving our certificate. */
-    suspend fun readPairingAck(): PairingMessage? = withContext(Dispatchers.IO) {
-        try {
-            val data = readMessage(inputStream ?: return@withContext null) ?: return@withContext null
-            PairingMessage.decode(data)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
+                // 6. Send configuration (Message 3)
+                val configMsg2 = PairingEncoder.encodeConfiguration()
+                writeAndFlush(configMsg2)
+
+                // 7. Read configuration ack — TV should respond with field 11 (empty ack)
+                val ack3 = readFrame(inputStream ?: return@withContext error("No input stream"))
+                    ?: return@withContext error("Failed to read config ack")
+
+                // At this point the TV shows the pairing code on screen
+
+                // 8. Extract server certificate from TLS session
+                serverCertificate = try {
+                    socket?.session?.peerCertificates?.getOrNull(0) as? X509Certificate
+                } catch (_: Exception) { null }
+
+                if (serverCertificate == null) {
+                    return@withContext error("Could not get server certificate from TLS handshake")
+                }
+
+                // 9. Compute secret
+                val clientComponents = certificateManager.getClientRsaComponents()
+                    ?: return@withContext error("No client RSA key")
+                val serverComponents = certificateManager.extractRsaComponents(serverCertificate!!)
+                    ?: return@withContext error("Could not extract server RSA key")
+
+                val secret = certificateManager.computeSecret(clientComponents, serverComponents, pin)
+
+                // 10. Send the computed secret (Message 4)
+                val secretMsg = PairingEncoder.encodeSecret(secret)
+                writeAndFlush(secretMsg)
+
+                // 11. Read final response — should contain server_certificate or status
+                val finalResponse = readFrame(inputStream ?: return@withContext error("No input stream"))
+                disconnect()
+
+                val serverCertBytes = serverCertificate!!.encoded
+                certificateManager.saveTvCertificate(serverCertBytes)
+
+                PairingResult(true, "Android TV", serverCertBytes)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                disconnect()
+                PairingResult(false, null, null)
+            }
         }
+
+    private fun connect(host: InetAddress) {
+        val sslContext = certificateManager.createPairingSslContext()
+        val sock = sslContext.socketFactory.createSocket(host, 6467) as SSLSocket
+        sock.enabledProtocols = arrayOf("TLSv1.2", "TLSv1.3")
+        sock.startHandshake()
+        sock.soTimeout = 3000  // 3 second read timeout
+        socket = sock
+        outputStream = DataOutputStream(sock.outputStream)
+        inputStream = DataInputStream(sock.inputStream)
     }
 
     fun disconnect() {
@@ -122,78 +110,14 @@ class PairingClient(private val certificateManager: CertificateManager) {
         inputStream = null
     }
 
-    // ── Full pairing flow convenience ──
-
-    data class PairingSession(
-        val serverName: String?,
-        val serverCertBytes: ByteArray?
-    )
-
-    suspend fun performPairing(host: InetAddress, pin: String): PairingResult =
-        withContext(Dispatchers.IO) {
-            try {
-                // 1. Connect
-                if (!connect(host)) return@withContext PairingResult(false, null, null)
-
-                // 2. Send pairing request
-                if (!sendPairingRequest()) {
-                    disconnect()
-                    return@withContext PairingResult(false, null, null)
-                }
-
-                // 3. Read TV's challenge response (should contain secret/challenge)
-                val challenge = readPairingResponse() ?: run {
-                    disconnect()
-                    return@withContext PairingResult(false, null, null)
-                }
-
-                // 4. Send PIN
-                if (!sendPin(pin)) {
-                    disconnect()
-                    return@withContext PairingResult(false, null, null)
-                }
-
-                // 5. Read TV response(s) — loop until we get the server certificate
-                var serverCert: ByteArray? = null
-                var serverName: String? = null
-                for (i in 0 until 3) {
-                    val response = readPairingResponse() ?: break
-                    if (response.serverCertificate != null) {
-                        serverCert = response.serverCertificate
-                        serverName = response.serverName?.toString(Charsets.UTF_8)
-                        break
-                    }
-                }
-
-                if (serverCert == null) {
-                    disconnect()
-                    return@withContext PairingResult(false, serverName, null)
-                }
-
-                // Save server certificate
-                certificateManager.saveTvCertificate(serverCert)
-
-                // 6. Send client certificate
-                if (!sendClientCertificate()) {
-                    disconnect()
-                    return@withContext PairingResult(false, serverName, serverCert)
-                }
-
-                // 7. Read final ack
-                readPairingAck()
-                disconnect()
-
-                PairingResult(true, serverName, serverCert)
-            } catch (e: Exception) {
-                e.printStackTrace()
-                disconnect()
-                PairingResult(false, null, null)
-            }
-        }
-
     private fun writeAndFlush(data: ByteArray) {
         val os = outputStream ?: throw IllegalStateException("Not connected")
-        os.write(writeMessage(data))
+        os.write(data)
         os.flush()
+    }
+
+    private fun error(msg: String): PairingResult {
+        disconnect()
+        return PairingResult(false, null, null)
     }
 }

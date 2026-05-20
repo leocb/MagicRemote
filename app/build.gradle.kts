@@ -50,6 +50,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.6.2")
     implementation("org.bouncycastle:bcpkix-jdk18on:1.78.1")
+    implementation("org.jmdns:jmdns:3.6.3")
+    implementation("org.slf4j:slf4j-nop:2.0.16")
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

@@ -1,9 +1,8 @@
 package com.leobottaro.magicremote.data.network
 
 import com.leobottaro.magicremote.data.certificate.CertificateManager
-import com.leobottaro.magicremote.data.protocol.MessageTypes
-import com.leobottaro.magicremote.data.protocol.RemoteMessage
-import com.leobottaro.magicremote.data.protocol.writeMessage
+import com.leobottaro.magicremote.data.protocol.RemoteEncoder
+import com.leobottaro.magicremote.data.protocol.readFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.DataOutputStream
@@ -14,24 +13,49 @@ class RemoteClient(private val certificateManager: CertificateManager) {
 
     private var socket: SSLSocket? = null
     private var outputStream: DataOutputStream? = null
-    private var isActive = false
+    private var configured = false
 
-    /** Connect to the TV on the remote control port (6466) using mTLS. */
+    /** Connect to the TV on port 6466 using mTLS and perform config exchange. */
     suspend fun connect(host: InetAddress, port: Int = 6466): Boolean = withContext(Dispatchers.IO) {
         try {
             val sslContext = certificateManager.createRemoteSslContext() ?: return@withContext false
             val sock = sslContext.socketFactory.createSocket(host, port) as SSLSocket
             sock.enabledProtocols = arrayOf("TLSv1.2", "TLSv1.3")
             sock.startHandshake()
+            sock.soTimeout = 2000  // 2 second read timeout for config exchange
             socket = sock
             outputStream = DataOutputStream(sock.outputStream)
+            val inputStream = sock.inputStream
 
-            // Send SET_ACTIVE immediately after connecting
-            val setActive = RemoteMessage(
-                messageType = MessageTypes.REMOTE_SET_ACTIVE
-            )
-            writeAndFlush(setActive.encode())
-            isActive = true
+            // 1. Read server's initial info message
+            val serverInfo = readFrame(inputStream) ?: run {
+                disconnect()
+                return@withContext false
+            }
+
+            // 2. Send 1st config
+            val config1 = RemoteEncoder.encodeRemoteConfig()
+            outputStream!!.write(config1)
+            outputStream!!.flush()
+
+            // 3. Read server response to 1st config
+            val response1 = readFrame(inputStream) ?: run {
+                disconnect()
+                return@withContext false
+            }
+
+            // 4. Send 2nd config ack
+            val config2 = RemoteEncoder.encodeRemoteConfigAck()
+            outputStream!!.write(config2)
+            outputStream!!.flush()
+
+            // 5. Read server status messages (power state, app info, player info)
+            // Read multiple messages that the server sends
+            for (i in 0 until 3) {
+                val statusMsg = readFrame(inputStream) ?: break
+            }
+
+            configured = true
             true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -40,27 +64,20 @@ class RemoteClient(private val certificateManager: CertificateManager) {
         }
     }
 
-    /** Send a key event (press and release). */
+    /** Send a key press (down then up). */
     suspend fun sendKeyPress(keyCode: Int): Boolean = withContext(Dispatchers.IO) {
         try {
-            ensureConnected()
+            val os = outputStream ?: return@withContext false
 
-            // Key down
-            val downMsg = RemoteMessage(
-                messageType = MessageTypes.REMOTE_KEY_EVENT,
-                keyCode = keyCode,
-                keyAction = MessageTypes.KEY_ACTION_DOWN
-            )
-            writeAndFlush(downMsg.encode())
+            // Press (action=1)
+            val press = RemoteEncoder.keyPress(keyCode)
+            os.write(press)
 
-            // Key up
-            val upMsg = RemoteMessage(
-                messageType = MessageTypes.REMOTE_KEY_EVENT,
-                keyCode = keyCode,
-                keyAction = MessageTypes.KEY_ACTION_UP
-            )
-            writeAndFlush(upMsg.encode())
+            // Release (action=2)
+            val release = RemoteEncoder.keyRelease(keyCode)
+            os.write(release)
 
+            os.flush()
             true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -69,34 +86,12 @@ class RemoteClient(private val certificateManager: CertificateManager) {
         }
     }
 
-    /** Check if currently connected. */
-    fun isConnected(): Boolean = socket?.isConnected == true && !socket!!.isClosed
+    fun isConnected(): Boolean = socket?.isConnected == true && !socket!!.isClosed && configured
 
     fun disconnect() {
-        isActive = false
-        try {
-            // Send inactive before closing
-            if (socket?.isConnected == true && !socket!!.isClosed) {
-                val msg = RemoteMessage(messageType = 2) // SET_ACTIVE = false
-                // Actually, SET_ACTIVE with no args might be interpreted as false
-                outputStream?.write(writeMessage(msg.encode()))
-                outputStream?.flush()
-            }
-        } catch (_: Exception) { }
+        configured = false
         try { socket?.close() } catch (_: Exception) { }
         socket = null
         outputStream = null
-    }
-
-    private suspend fun ensureConnected() {
-        if (!isConnected()) {
-            throw IllegalStateException("Remote not connected")
-        }
-    }
-
-    private fun writeAndFlush(data: ByteArray) {
-        val os = outputStream ?: throw IllegalStateException("Not connected")
-        os.write(writeMessage(data))
-        os.flush()
     }
 }

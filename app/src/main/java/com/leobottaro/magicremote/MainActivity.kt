@@ -1,14 +1,18 @@
 package com.leobottaro.magicremote
 
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.leobottaro.magicremote.ui.screens.DiscoveryScreen
 import com.leobottaro.magicremote.ui.screens.PairingScreen
@@ -26,52 +30,81 @@ class MainActivity : ComponentActivity() {
                 val viewModel: RemoteViewModel = viewModel()
                 val state by viewModel.state.collectAsState()
 
-                Scaffold(modifier = androidx.compose.ui.Modifier.fillMaxSize()) { innerPadding ->
-                    when (val currentScreen = state.screen) {
-                        is Screen.Discovery -> {
-                            DiscoveryScreen(
-                                devices = state.devices,
-                                isScanning = state.isScanning,
-                                error = state.error,
-                                onDeviceSelected = { viewModel.selectDevice(it) },
-                                onStartDiscovery = { viewModel.startDiscovery() },
-                                onClearError = { viewModel.clearError() }
-                            )
-                        }
-
-                        is Screen.Pairing -> {
-                            PairingScreen(
-                                device = currentScreen.device,
-                                pairingMessage = state.pairingMessage,
-                                error = state.error,
-                                onSubmitPin = { pin ->
-                                    viewModel.submitPin(currentScreen.device, pin)
-                                },
-                                onBack = { viewModel.goBackToDiscovery() },
-                                onClearError = { viewModel.clearError() }
-                            )
-                        }
-
-                        is Screen.Remote -> {
-                            RemoteControlScreen(
-                                device = currentScreen.device,
-                                connected = state.connected,
-                                onUp = { viewModel.pressUp() },
-                                onDown = { viewModel.pressDown() },
-                                onLeft = { viewModel.pressLeft() },
-                                onRight = { viewModel.pressRight() },
-                                onEnter = { viewModel.pressEnter() },
-                                onHome = { viewModel.pressHome() },
-                                onBack = { viewModel.pressBack() },
-                                onVolumeUp = { viewModel.volumeUp() },
-                                onVolumeDown = { viewModel.volumeDown() },
-                                onPower = { viewModel.pressPower() },
-                                onDisconnect = { viewModel.goBackToDiscovery() }
-                            )
-                        }
+                val permissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission()
+                ) { granted ->
+                    if (granted) {
+                        viewModel.onLocationPermissionGranted()
+                    } else {
+                        viewModel.onLocationPermissionDenied()
                     }
                 }
+
+                Content(
+                    state = state,
+                    viewModel = viewModel,
+                    onRequestLocationPermission = {
+                        permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                    }
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun Content(
+    state: com.leobottaro.magicremote.viewmodel.RemoteUiState,
+    viewModel: RemoteViewModel,
+    onRequestLocationPermission: () -> Unit
+) {
+    when (val currentScreen = state.screen) {
+        is Screen.Discovery -> {
+            DiscoveryScreen(
+                devices = state.devices,
+                isScanning = state.isScanning,
+                needsLocationPermission = state.needsLocationPermission,
+                showManualIpEntry = state.showManualIpEntry,
+                error = state.error,
+                onDeviceSelected = { viewModel.selectDevice(it) },
+                onStartDiscovery = { viewModel.startDiscovery() },
+                onRequestPermission = onRequestLocationPermission,
+                onDismissPermission = { viewModel.onLocationPermissionDenied() },
+                onToggleManualIpEntry = { viewModel.toggleManualIpEntry() },
+                onConnectToIp = { ip -> viewModel.connectToManualIp(ip) },
+                onClearError = { viewModel.clearError() }
+            )
+        }
+
+        is Screen.Pairing -> {
+            PairingScreen(
+                device = currentScreen.device,
+                pairingMessage = state.pairingMessage,
+                error = state.error,
+                onSubmitPin = { pin ->
+                    viewModel.submitPin(currentScreen.device, pin)
+                },
+                onBack = { viewModel.goBackToDiscovery() },
+                onClearError = { viewModel.clearError() }
+            )
+        }
+
+        is Screen.Remote -> {
+            RemoteControlScreen(
+                device = currentScreen.device,
+                connected = state.connected,
+                onUp = { viewModel.pressUp() },
+                onDown = { viewModel.pressDown() },
+                onLeft = { viewModel.pressLeft() },
+                onRight = { viewModel.pressRight() },
+                onEnter = { viewModel.pressEnter() },
+                onHome = { viewModel.pressHome() },
+                onBack = { viewModel.pressBack() },
+                onVolumeUp = { viewModel.volumeUp() },
+                onVolumeDown = { viewModel.volumeDown() },
+                onPower = { viewModel.pressPower() },
+                onDisconnect = { viewModel.goBackToDiscovery() }
+            )
         }
     }
 }

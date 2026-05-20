@@ -1,13 +1,16 @@
 package com.leobottaro.magicremote.viewmodel
 
+import android.Manifest
 import android.app.Application
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.leobottaro.magicremote.data.certificate.CertificateManager
 import com.leobottaro.magicremote.data.discovery.TvDevice
 import com.leobottaro.magicremote.data.discovery.TvDiscoveryManager
 import com.leobottaro.magicremote.data.network.PairingClient
-import com.leobottaro.magicremote.data.network.PairingResult
 import com.leobottaro.magicremote.data.network.RemoteClient
 import com.leobottaro.magicremote.data.protocol.KeyCodes
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.net.InetAddress
 
 sealed class Screen {
     object Discovery : Screen()
@@ -28,7 +32,9 @@ data class RemoteUiState(
     val isScanning: Boolean = false,
     val error: String? = null,
     val pairingMessage: String? = null,
-    val connected: Boolean = false
+    val connected: Boolean = false,
+    val needsLocationPermission: Boolean = false,
+    val showManualIpEntry: Boolean = false
 )
 
 class RemoteViewModel(application: Application) : AndroidViewModel(application) {
@@ -48,11 +54,40 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun startDiscovery() {
+        val ctx = getApplication<Application>()
+
+        // Android 9-12 requires ACCESS_FINE_LOCATION for WiFi scanning/mDNS
+        if (Build.VERSION.SDK_INT in Build.VERSION_CODES.P..Build.VERSION_CODES.S_V2) {
+            if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                _state.update { it.copy(needsLocationPermission = true) }
+                return
+            }
+        }
+
+        beginScan()
+    }
+
+    fun onLocationPermissionGranted() {
+        _state.update { it.copy(needsLocationPermission = false) }
+        beginScan()
+    }
+
+    fun onLocationPermissionDenied() {
+        _state.update {
+            it.copy(
+                needsLocationPermission = false,
+                error = "Location permission is required to discover TVs."
+            )
+        }
+    }
+
+    private fun beginScan() {
         _state.update { it.copy(isScanning = true, error = null, devices = emptyList()) }
 
         viewModelScope.launch {
             discoveryManager.discoverTvs().collect { device ->
-                // Avoid duplicates
                 val existing = _state.value.devices.any { it.host == device.host }
                 if (!existing) {
                     _state.update { state ->
@@ -62,6 +97,24 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
     }
+
+    // ── Manual IP entry ──
+
+    fun toggleManualIpEntry() {
+        _state.update { it.copy(showManualIpEntry = !it.showManualIpEntry) }
+    }
+
+    fun connectToManualIp(ip: String) {
+        try {
+            val address = InetAddress.getByName(ip.trim())
+            val device = TvDevice(name = ip.trim(), host = address, port = 6466)
+            selectDevice(device)
+        } catch (e: Exception) {
+            _state.update { it.copy(error = "Invalid IP address. Enter a valid IPv4 address.") }
+        }
+    }
+
+    // ── Device selection ──
 
     fun selectDevice(device: TvDevice) {
         if (certificateManager.isPaired()) {
@@ -85,7 +138,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
             } else {
-                // If remote connection fails, try pairing again
                 _state.update {
                     it.copy(
                         screen = Screen.Pairing(device),
@@ -97,6 +149,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
     }
+
+    // ── Pairing ──
 
     fun submitPin(device: TvDevice, pin: String) {
         if (pin.length < 4) return
@@ -129,7 +183,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 isScanning = true
             )
         }
-        startDiscovery()
+        beginScan()
     }
 
     // ── Remote control actions ──
@@ -158,7 +212,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         remoteClient.disconnect()
         pairingClient.disconnect()
-        discoveryManager.stopDiscovery()
         super.onCleared()
     }
 }

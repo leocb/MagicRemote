@@ -4,6 +4,7 @@ import android.util.Log
 import com.leobottaro.magicremote.data.certificate.CertificateManager
 import com.leobottaro.magicremote.data.protocol.RemoteConfig
 import com.leobottaro.magicremote.data.protocol.RemoteKeyEvent
+import com.leobottaro.magicremote.data.protocol.RemoteRelativeEvent
 import com.leobottaro.magicremote.data.protocol.readFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -25,7 +26,7 @@ class RemoteClient(private val certificateManager: CertificateManager) {
     suspend fun connect(host: InetAddress): Boolean = withContext(Dispatchers.IO) {
         hostCache = host
         val ok = establishConnection()
-        Log.d("RemoteClient", "connect() returned $ok")
+        Log.d("RemoteClient", "connect()=$ok")
         ok
     }
 
@@ -33,23 +34,31 @@ class RemoteClient(private val certificateManager: CertificateManager) {
         for (attempt in 1..2) {
             try {
                 val os = outputStream ?: throw Exception("Not connected")
-                val t0 = System.currentTimeMillis()
                 os.write(RemoteKeyEvent.keyPress(keyCode))
                 os.write(RemoteKeyEvent.keyRelease(keyCode))
                 os.flush()
-                Log.d("RemoteClient", "Key $keyCode sent in ${System.currentTimeMillis()-t0}ms (ping=$pingCount)")
+                Log.d("RemoteClient", "Key $keyCode sent (ping=$pingCount)")
                 return@withContext true
             } catch (e: Exception) {
                 Log.w("RemoteClient", "attempt $attempt: ${e.message}")
                 close()
                 if (attempt == 1 && hostCache != null) {
-                    Log.d("RemoteClient", "reconnecting...")
                     if (establishConnection()) continue
                 }
                 return@withContext false
             }
         }
         false
+    }
+
+    suspend fun sendRelativeEvent(dx: Int, dy: Int): Boolean = withContext(Dispatchers.IO) {
+        try {
+            outputStream?.write(RemoteRelativeEvent.encode(dx, dy))
+            outputStream?.flush()
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     private fun handlePing(timeoutMs: Int): Boolean {
@@ -71,10 +80,8 @@ class RemoteClient(private val certificateManager: CertificateManager) {
     }
 
     fun runPingLoop() {
-        while (configured) {
-            if (!handlePing(1500)) break
-        }
-        Log.d("RemoteClient", "Ping loop ended (handled $pingCount pings)")
+        while (configured) { if (!handlePing(1500)) break }
+        Log.d("RemoteClient", "Ping loop ended ($pingCount pings)")
     }
 
     private fun establishConnection(): Boolean {
@@ -82,27 +89,21 @@ class RemoteClient(private val certificateManager: CertificateManager) {
         try {
             val ctx = certificateManager.createRemoteSslContext() ?: return false
             val host = hostCache ?: return false
-            val tAll = System.currentTimeMillis()
-
             sock = ctx.socketFactory.createSocket(host, 6466) as SSLSocket
             sock.enabledProtocols = arrayOf("TLSv1.2", "TLSv1.3")
             sock.startHandshake()
-            val t1 = System.currentTimeMillis()
-
             val os = DataOutputStream(sock.outputStream)
             val ins = sock.inputStream
-
             sock.soTimeout = 1000
-            readFrame(ins)  // server info
+            readFrame(ins)
             os.write(RemoteConfig.encodeConfig()); os.flush()
-            readFrame(ins)  // resp1
+            readFrame(ins)
             sock.soTimeout = 50
-            readFrame(ins)  // optional resp2
+            readFrame(ins)
             os.write(RemoteConfig.encodeConfigAck()); os.flush()
             for (i in 0 until 3) { if (readFrame(ins) == null) break }
-
             socket = sock; outputStream = os; inputStream = ins; configured = true
-            Log.d("RemoteClient", "Connected (TLS=${t1-tAll}ms total=${System.currentTimeMillis()-tAll}ms)")
+            Log.d("RemoteClient", "Connected")
             return true
         } catch (e: Exception) {
             Log.e("RemoteClient", "establishConnection failed", e)
@@ -112,12 +113,6 @@ class RemoteClient(private val certificateManager: CertificateManager) {
     }
 
     fun isConnected(): Boolean = socket?.isConnected == true && !socket!!.isClosed && configured
-
-    private fun close() {
-        configured = false
-        try { socket?.close() } catch (_: Exception) { }
-        socket = null; outputStream = null; inputStream = null
-    }
-
+    private fun close() { configured = false; try { socket?.close() } catch (_: Exception) { }; socket = null; outputStream = null; inputStream = null }
     fun disconnect() { close() }
 }

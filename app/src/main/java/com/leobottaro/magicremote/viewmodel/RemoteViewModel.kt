@@ -62,24 +62,14 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             connections.size == 1 -> connectToSaved(connections.first())
             connections.isEmpty() && certificateManager.isPaired() ->
                 _state.update { it.copy(screen = Screen.Discovery, error = "Previously paired TV found — select it to save.") }
-            else ->
-                _state.update { it.copy(screen = Screen.ConnectionList) }
+            else -> _state.update { it.copy(screen = Screen.ConnectionList) }
         }
     }
 
     fun goToConnectionList() {
-        pingJob?.cancel()
-        pingJob = null
-        remoteClient.disconnect()
-        pairingClient.disconnect()
-        _state.update {
-            it.copy(
-                screen = Screen.ConnectionList,
-                savedConnections = connectionRepo.list(),
-                pairingMessage = null,
-                error = null
-            )
-        }
+        pingJob?.cancel(); pingJob = null
+        remoteClient.disconnect(); pairingClient.disconnect()
+        _state.update { it.copy(screen = Screen.ConnectionList, savedConnections = connectionRepo.list(), pairingMessage = null, error = null) }
     }
 
     fun goToDiscovery() { _state.update { it.copy(screen = Screen.Discovery) } }
@@ -90,9 +80,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             try {
                 val host = InetAddress.getByName(connection.host)
                 connectToRemote(TvDevice(name = connection.name, host = host, port = 6466))
-            } catch (e: Exception) {
-                _state.update { it.copy(pairingMessage = null, error = "Cannot reach ${connection.host}") }
-            }
+            } catch (e: Exception) { _state.update { it.copy(pairingMessage = null, error = "Cannot reach ${connection.host}") } }
         }
     }
 
@@ -119,11 +107,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun startDiscovery() {
         val ctx = getApplication<Application>()
         if (Build.VERSION.SDK_INT in Build.VERSION_CODES.P..Build.VERSION_CODES.S_V2) {
-            if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                _state.update { it.copy(needsLocationPermission = true) }
-                return
+            if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                _state.update { it.copy(needsLocationPermission = true) }; return
             }
         }
         beginScan()
@@ -159,11 +144,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             _state.update { it.copy(pairingMessage = "Connecting to TV...") }
             viewModelScope.launch {
                 val result = pairingClient.initiatePairing(device.host)
-                if (result.success) {
-                    _state.update { it.copy(screen = Screen.Pairing(device), pairingMessage = null) }
-                } else {
-                    _state.update { it.copy(pairingMessage = null, error = result.errorMessage ?: "Pairing failed") }
-                }
+                if (result.success) { _state.update { it.copy(screen = Screen.Pairing(device), pairingMessage = null) } }
+                else { _state.update { it.copy(pairingMessage = null, error = result.errorMessage ?: "Pairing failed") } }
             }
         }
     }
@@ -174,15 +156,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             if (remoteClient.connect(device.host)) {
                 val host = device.host.hostAddress ?: device.name
                 saveConnection(host, device.name)
-                _state.update {
-                    it.copy(
-                        screen = Screen.Remote(device),
-                        savedConnections = connectionRepo.list(),
-                        pairingMessage = null,
-                        connected = true,
-                        error = null
-                    )
-                }
+                _state.update { it.copy(screen = Screen.Remote(device), savedConnections = connectionRepo.list(), pairingMessage = null, connected = true, error = null) }
                 pingJob?.cancel()
                 pingJob = viewModelScope.launch(Dispatchers.IO) { remoteClient.runPingLoop() }
             } else {
@@ -199,17 +173,14 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             if (result.success) {
                 _state.update { it.copy(pairingMessage = "Pairing successful! Connecting...", error = null) }
                 connectToRemote(device)
-            } else {
-                _state.update { it.copy(pairingMessage = null, error = result.errorMessage ?: "Pairing failed.") }
-            }
+            } else { _state.update { it.copy(pairingMessage = null, error = result.errorMessage ?: "Pairing failed.") } }
         }
     }
 
     fun cancelPairing() { pairingClient.disconnect(); goToConnectionList() }
 
-    fun sendKeyEvent(keyCode: Int) {
-        viewModelScope.launch { remoteClient.sendKeyPress(keyCode) }
-    }
+    fun sendKeyEvent(keyCode: Int) { viewModelScope.launch { remoteClient.sendKeyPress(keyCode) } }
+    fun sendRelativeEvent(dx: Int, dy: Int) { viewModelScope.launch { remoteClient.sendRelativeEvent(dx, dy) } }
 
     fun pressUp() = sendKeyEvent(KeyCodes.KEYCODE_DPAD_UP)
     fun pressDown() = sendKeyEvent(KeyCodes.KEYCODE_DPAD_DOWN)
@@ -225,9 +196,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun clearError() { _state.update { it.copy(error = null) } }
 
     override fun onCleared() {
-        pingJob?.cancel()
-        remoteClient.disconnect()
-        pairingClient.disconnect()
-        super.onCleared()
+        pingJob?.cancel(); remoteClient.disconnect(); pairingClient.disconnect(); super.onCleared()
     }
 }

@@ -39,9 +39,7 @@ class MainActivity : ComponentActivity() {
                 Content(
                     state = state,
                     viewModel = viewModel,
-                    onRequestLocationPermission = {
-                        permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
-                    }
+                    onRequestLocationPermission = { permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
                 )
             }
         }
@@ -55,63 +53,56 @@ private fun Content(
     onRequestLocationPermission: () -> Unit
 ) {
     when (val currentScreen = state.screen) {
-        is Screen.ConnectionList -> {
-            ConnectionListScreen(
-                connections = state.savedConnections,
-                error = state.error,
-                pairingMessage = state.pairingMessage,
-                onConnect = { viewModel.connectToSaved(it) },
-                onRename = { conn, name -> viewModel.renameConnection(conn, name) },
-                onDelete = { viewModel.deleteConnection(it) },
-                onAddNew = { viewModel.goToDiscovery() },
-                onClearError = { viewModel.clearError() }
-            )
-        }
+        is Screen.ConnectionList -> ConnectionListScreen(
+            connections = state.savedConnections,
+            error = state.error,
+            pairingMessage = state.pairingMessage,
+            onConnect = { viewModel.connectToSaved(it) },
+            onRename = { conn, name -> viewModel.renameConnection(conn, name) },
+            onDelete = { viewModel.deleteConnection(it) },
+            onAddNew = { viewModel.goToDiscovery() },
+            onClearError = { viewModel.clearError() }
+        )
 
-        is Screen.Discovery -> {
-            DiscoveryScreen(
-                devices = state.devices,
-                isScanning = state.isScanning,
-                needsLocationPermission = state.needsLocationPermission,
-                showManualIpEntry = state.showManualIpEntry,
-                error = state.error,
-                onDeviceSelected = { viewModel.selectDevice(it) },
-                onStartDiscovery = { viewModel.startDiscovery() },
-                onRequestPermission = onRequestLocationPermission,
-                onDismissPermission = { viewModel.onLocationPermissionDenied() },
-                onToggleManualIpEntry = { viewModel.toggleManualIpEntry() },
-                onConnectToIp = { ip -> viewModel.connectToManualIp(ip) },
-                onClearError = { viewModel.clearError() }
-            )
-        }
+        is Screen.Discovery -> DiscoveryScreen(
+            devices = state.devices,
+            isScanning = state.isScanning,
+            needsLocationPermission = state.needsLocationPermission,
+            showManualIpEntry = state.showManualIpEntry,
+            error = state.error,
+            onDeviceSelected = { viewModel.selectDevice(it) },
+            onStartDiscovery = { viewModel.startDiscovery() },
+            onRequestPermission = onRequestLocationPermission,
+            onDismissPermission = { viewModel.onLocationPermissionDenied() },
+            onToggleManualIpEntry = { viewModel.toggleManualIpEntry() },
+            onConnectToIp = { ip -> viewModel.connectToManualIp(ip) },
+            onClearError = { viewModel.clearError() }
+        )
 
-        is Screen.Pairing -> {
-            PairingScreen(
-                device = currentScreen.device,
-                pairingMessage = state.pairingMessage,
-                error = state.error,
-                onSubmitPin = { pin -> viewModel.submitPin(currentScreen.device, pin) },
-                onBack = { viewModel.cancelPairing() },
-                onClearError = { viewModel.clearError() }
-            )
-        }
+        is Screen.Pairing -> PairingScreen(
+            device = currentScreen.device,
+            pairingMessage = state.pairingMessage,
+            error = state.error,
+            onSubmitPin = { pin -> viewModel.submitPin(currentScreen.device, pin) },
+            onBack = { viewModel.cancelPairing() },
+            onClearError = { viewModel.clearError() }
+        )
 
-        is Screen.Remote -> {
-            RemoteControlScreen(
-                device = currentScreen.device,
-                connected = state.connected,
-                onUp = { viewModel.pressUp() },
-                onDown = { viewModel.pressDown() },
-                onLeft = { viewModel.pressLeft() },
-                onRight = { viewModel.pressRight() },
-                onEnter = { viewModel.pressEnter() },
-                onHome = { viewModel.pressHome() },
-                onBack = { viewModel.pressBack() },
-                onVolumeUp = { viewModel.volumeUp() },
-                onVolumeDown = { viewModel.volumeDown() },
-                onPower = { viewModel.pressPower() },
-                onDisconnect = { viewModel.goToConnectionList() }
-            )
-        }
+        is Screen.Remote -> RemoteControlScreen(
+            device = currentScreen.device,
+            connected = state.connected,
+            onUp = { viewModel.pressUp() },
+            onDown = { viewModel.pressDown() },
+            onLeft = { viewModel.pressLeft() },
+            onRight = { viewModel.pressRight() },
+            onEnter = { viewModel.pressEnter() },
+            onHome = { viewModel.pressHome() },
+            onBack = { viewModel.pressBack() },
+            onVolumeUp = { viewModel.volumeUp() },
+            onVolumeDown = { viewModel.volumeDown() },
+            onPower = { viewModel.pressPower() },
+            onDisconnect = { viewModel.goToConnectionList() },
+            onRelativeEvent = { dx, dy -> viewModel.sendRelativeEvent(dx, dy) }
+        )
     }
 }

@@ -8,12 +8,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.leobottaro.magicremote.ui.screens.ConnectionListScreen
 import com.leobottaro.magicremote.ui.screens.DiscoveryScreen
 import com.leobottaro.magicremote.ui.screens.PairingScreen
 import com.leobottaro.magicremote.ui.screens.RemoteControlScreen
@@ -33,11 +32,8 @@ class MainActivity : ComponentActivity() {
                 val permissionLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.RequestPermission()
                 ) { granted ->
-                    if (granted) {
-                        viewModel.onLocationPermissionGranted()
-                    } else {
-                        viewModel.onLocationPermissionDenied()
-                    }
+                    if (granted) viewModel.onLocationPermissionGranted()
+                    else viewModel.onLocationPermissionDenied()
                 }
 
                 Content(
@@ -59,6 +55,19 @@ private fun Content(
     onRequestLocationPermission: () -> Unit
 ) {
     when (val currentScreen = state.screen) {
+        is Screen.ConnectionList -> {
+            ConnectionListScreen(
+                connections = state.savedConnections,
+                error = state.error,
+                pairingMessage = state.pairingMessage,
+                onConnect = { viewModel.connectToSaved(it) },
+                onRename = { conn, name -> viewModel.renameConnection(conn, name) },
+                onDelete = { viewModel.deleteConnection(it) },
+                onAddNew = { viewModel.goToDiscovery() },
+                onClearError = { viewModel.clearError() }
+            )
+        }
+
         is Screen.Discovery -> {
             DiscoveryScreen(
                 devices = state.devices,
@@ -81,10 +90,8 @@ private fun Content(
                 device = currentScreen.device,
                 pairingMessage = state.pairingMessage,
                 error = state.error,
-                onSubmitPin = { pin ->
-                    viewModel.submitPin(currentScreen.device, pin)
-                },
-                onBack = { viewModel.goBackToDiscovery() },
+                onSubmitPin = { pin -> viewModel.submitPin(currentScreen.device, pin) },
+                onBack = { viewModel.cancelPairing() },
                 onClearError = { viewModel.clearError() }
             )
         }
@@ -103,7 +110,7 @@ private fun Content(
                 onVolumeUp = { viewModel.volumeUp() },
                 onVolumeDown = { viewModel.volumeDown() },
                 onPower = { viewModel.pressPower() },
-                onDisconnect = { viewModel.goBackToDiscovery() }
+                onDisconnect = { viewModel.goToConnectionList() }
             )
         }
     }

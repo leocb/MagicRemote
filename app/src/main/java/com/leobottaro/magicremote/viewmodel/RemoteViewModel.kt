@@ -13,6 +13,8 @@ import com.leobottaro.magicremote.data.discovery.TvDiscoveryManager
 import com.leobottaro.magicremote.data.network.PairingClient
 import com.leobottaro.magicremote.data.network.RemoteClient
 import com.leobottaro.magicremote.data.protocol.KeyCodes
+import com.leobottaro.magicremote.data.storage.ConnectionRepository
+import com.leobottaro.magicremote.data.storage.SavedConnection
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,14 +23,16 @@ import kotlinx.coroutines.launch
 import java.net.InetAddress
 
 sealed class Screen {
+    object ConnectionList : Screen()
     object Discovery : Screen()
     data class Pairing(val device: TvDevice, val serverName: String? = null) : Screen()
     data class Remote(val device: TvDevice) : Screen()
 }
 
 data class RemoteUiState(
-    val screen: Screen = Screen.Discovery,
+    val screen: Screen = Screen.ConnectionList,
     val devices: List<TvDevice> = emptyList(),
+    val savedConnections: List<SavedConnection> = emptyList(),
     val isScanning: Boolean = false,
     val error: String? = null,
     val pairingMessage: String? = null,
@@ -43,20 +47,91 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     private val discoveryManager = TvDiscoveryManager(application)
     private val pairingClient = PairingClient(certificateManager)
     private val remoteClient = RemoteClient(certificateManager)
+    private val connectionRepo = ConnectionRepository(application)
 
     private val _state = MutableStateFlow(RemoteUiState())
     val state: StateFlow<RemoteUiState> = _state.asStateFlow()
 
     init {
-        if (certificateManager.isPaired()) {
+        val connections = connectionRepo.list()
+        if (connections.isEmpty() && certificateManager.isPaired()) {
+            // Previously paired before connection saving existed
+            _state.update {
+                it.copy(
+                    savedConnections = connections,
+                    screen = Screen.Discovery,
+                    error = "Previously paired TV found — select it to save the connection."
+                )
+            }
+        } else {
+            _state.update { it.copy(savedConnections = connections, screen = Screen.ConnectionList) }
+        }
+    }
+
+    // ── Screen navigation ──
+
+    fun goToConnectionList() {
+        remoteClient.disconnect()
+        pairingClient.disconnect()
+        _state.update {
+            it.copy(
+                screen = Screen.ConnectionList,
+                savedConnections = connectionRepo.list(),
+                pairingMessage = null,
+                error = null
+            )
+        }
+    }
+
+    fun goToDiscovery() {
+        _state.update { it.copy(screen = Screen.Discovery) }
+    }
+
+    // ── Connection management ──
+
+    fun connectToSaved(connection: SavedConnection) {
+        _state.update { it.copy(pairingMessage = "Connecting to ${connection.name}...", error = null) }
+        viewModelScope.launch {
+            try {
+                val host = InetAddress.getByName(connection.host)
+                val device = TvDevice(name = connection.name, host = host, port = 6466)
+                connectToRemote(device)
+            } catch (e: Exception) {
+                _state.update { it.copy(pairingMessage = null, error = "Cannot reach ${connection.host}") }
+            }
+        }
+    }
+
+    fun renameConnection(connection: SavedConnection, newName: String) {
+        connectionRepo.update(connection.copy(name = newName))
+        _state.update { it.copy(savedConnections = connectionRepo.list()) }
+    }
+
+    fun deleteConnection(connection: SavedConnection) {
+        connectionRepo.delete(connection.id)
+        if (connectionRepo.count() == 0) {
+            certificateManager.clearPairing()
+        }
+        val remaining = connectionRepo.list()
+        _state.update { it.copy(savedConnections = remaining) }
+        if (remaining.isEmpty()) {
             _state.update { it.copy(screen = Screen.Discovery) }
         }
     }
 
+    private fun saveConnection(host: String, name: String) {
+        // Avoid duplicates by checking if the host is already saved
+        val existing = connectionRepo.list().any { it.host == host }
+        if (!existing) {
+            connectionRepo.add(SavedConnection(name = name, host = host))
+            _state.update { it.copy(savedConnections = connectionRepo.list()) }
+        }
+    }
+
+    // ── Discovery ──
+
     fun startDiscovery() {
         val ctx = getApplication<Application>()
-
-        // Android 9-12 requires ACCESS_FINE_LOCATION for WiFi scanning/mDNS
         if (Build.VERSION.SDK_INT in Build.VERSION_CODES.P..Build.VERSION_CODES.S_V2) {
             if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED
@@ -65,7 +140,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 return
             }
         }
-
         beginScan()
     }
 
@@ -75,30 +149,20 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun onLocationPermissionDenied() {
-        _state.update {
-            it.copy(
-                needsLocationPermission = false,
-                error = "Location permission is required to discover TVs."
-            )
-        }
+        _state.update { it.copy(needsLocationPermission = false, error = "Location permission is required.") }
     }
 
     private fun beginScan() {
         _state.update { it.copy(isScanning = true, error = null, devices = emptyList()) }
-
         viewModelScope.launch {
             discoveryManager.discoverTvs().collect { device ->
                 val existing = _state.value.devices.any { it.host == device.host }
                 if (!existing) {
-                    _state.update { state ->
-                        state.copy(devices = state.devices + device, isScanning = false)
-                    }
+                    _state.update { state -> state.copy(devices = state.devices + device, isScanning = false) }
                 }
             }
         }
     }
-
-    // ── Manual IP entry ──
 
     fun toggleManualIpEntry() {
         _state.update { it.copy(showManualIpEntry = !it.showManualIpEntry) }
@@ -110,24 +174,21 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             val device = TvDevice(name = ip.trim(), host = address, port = 6466)
             selectDevice(device)
         } catch (e: Exception) {
-            _state.update { it.copy(error = "Invalid IP address. Enter a valid IPv4 address.") }
+            _state.update { it.copy(error = "Invalid IP address.") }
         }
     }
 
-    // ── Device selection ──
+    // ── Device selection / pairing ──
 
     fun selectDevice(device: TvDevice) {
         if (certificateManager.isPaired()) {
             connectToRemote(device)
         } else {
-            // Initiate pairing immediately — TV shows a code in response
             _state.update { it.copy(pairingMessage = "Connecting to TV...") }
             viewModelScope.launch {
                 val result = pairingClient.initiatePairing(device.host)
                 if (result.success) {
-                    _state.update {
-                        it.copy(screen = Screen.Pairing(device), pairingMessage = null)
-                    }
+                    _state.update { it.copy(screen = Screen.Pairing(device), pairingMessage = null) }
                 } else {
                     _state.update {
                         it.copy(
@@ -145,9 +206,13 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             val connected = remoteClient.connect(device.host)
             if (connected) {
+                // Save connection on first successful remote connect
+                val host = device.host.hostAddress ?: device.name
+                saveConnection(host, device.name)
                 _state.update {
                     it.copy(
                         screen = Screen.Remote(device),
+                        savedConnections = connectionRepo.list(),
                         pairingMessage = null,
                         connected = true,
                         error = null
@@ -166,43 +231,32 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // ── Pairing ──
-
     fun submitPin(device: TvDevice, pin: String) {
         if (pin.length < 6) return
-
         _state.update { it.copy(pairingMessage = "Pairing...", error = null) }
 
         viewModelScope.launch {
             val result = pairingClient.completePairing(pin)
             if (result.success) {
-                _state.update {
-                    it.copy(pairingMessage = "Pairing successful! Connecting...", error = null)
-                }
+                _state.update { it.copy(pairingMessage = "Pairing successful! Connecting...", error = null) }
                 connectToRemote(device)
             } else {
                 _state.update {
                     it.copy(
                         pairingMessage = null,
-                        error = result.errorMessage ?: "Pairing failed. Check the PIN and try again."
+                        error = result.errorMessage ?: "Pairing failed."
                     )
                 }
             }
         }
     }
 
-    fun goBackToDiscovery() {
-        remoteClient.disconnect()
-        _state.update {
-            RemoteUiState(
-                devices = it.devices,
-                isScanning = true
-            )
-        }
-        beginScan()
+    fun cancelPairing() {
+        pairingClient.disconnect()
+        goToConnectionList()
     }
 
-    // ── Remote control actions ──
+    // ── Remote control ──
 
     fun sendKeyEvent(keyCode: Int) {
         viewModelScope.launch {

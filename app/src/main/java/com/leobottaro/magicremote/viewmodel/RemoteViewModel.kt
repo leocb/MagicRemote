@@ -2,8 +2,11 @@ package com.leobottaro.magicremote.viewmodel
 
 import android.Manifest
 import android.app.Application
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -50,6 +53,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     private val pairingClient = PairingClient(certificateManager)
     private val remoteClient = RemoteClient(certificateManager)
     private val connectionRepo = ConnectionRepository(application)
+    private val vibrator = application.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
     private var pingJob: Job? = null
 
     private val _state = MutableStateFlow(RemoteUiState())
@@ -179,19 +183,44 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun cancelPairing() { pairingClient.disconnect(); goToConnectionList() }
 
-    fun sendKeyEvent(keyCode: Int) { viewModelScope.launch { remoteClient.sendKeyPress(keyCode) } }
+    // ── Haptic feedback ──
+
+    private fun vibrate(ms: Long) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            vibrator.vibrate(ms)
+        }
+    }
+
+    private fun doKey(keyCode: Int) {
+        vibrate(3)
+        viewModelScope.launch {
+            remoteClient.sendKeyPress(keyCode)
+            launch(Dispatchers.Main) { vibrate(2) }
+        }
+    }
+
+    private fun doVolume(keyCode: Int) {
+        vibrate(3)
+        viewModelScope.launch {
+            repeat(2) { remoteClient.sendKeyPress(keyCode) }  // two consecutive presses for noticeable change
+            launch(Dispatchers.Main) { vibrate(2) }
+        }
+    }
+
     fun sendRelativeEvent(dx: Int, dy: Int) { viewModelScope.launch { remoteClient.sendRelativeEvent(dx, dy) } }
 
-    fun pressUp() = sendKeyEvent(KeyCodes.KEYCODE_DPAD_UP)
-    fun pressDown() = sendKeyEvent(KeyCodes.KEYCODE_DPAD_DOWN)
-    fun pressLeft() = sendKeyEvent(KeyCodes.KEYCODE_DPAD_LEFT)
-    fun pressRight() = sendKeyEvent(KeyCodes.KEYCODE_DPAD_RIGHT)
-    fun pressEnter() = sendKeyEvent(KeyCodes.KEYCODE_DPAD_CENTER)
-    fun pressHome() = sendKeyEvent(KeyCodes.KEYCODE_HOME)
-    fun pressBack() = sendKeyEvent(KeyCodes.KEYCODE_BACK)
-    fun volumeUp() = sendKeyEvent(KeyCodes.KEYCODE_VOLUME_UP)
-    fun volumeDown() = sendKeyEvent(KeyCodes.KEYCODE_VOLUME_DOWN)
-    fun pressPower() = sendKeyEvent(KeyCodes.KEYCODE_POWER)
+    fun pressUp() = doKey(KeyCodes.KEYCODE_DPAD_UP)
+    fun pressDown() = doKey(KeyCodes.KEYCODE_DPAD_DOWN)
+    fun pressLeft() = doKey(KeyCodes.KEYCODE_DPAD_LEFT)
+    fun pressRight() = doKey(KeyCodes.KEYCODE_DPAD_RIGHT)
+    fun pressEnter() = doKey(KeyCodes.KEYCODE_DPAD_CENTER)
+    fun pressHome() = doKey(KeyCodes.KEYCODE_HOME)
+    fun pressBack() = doKey(KeyCodes.KEYCODE_BACK)
+    fun pressPower() = doKey(KeyCodes.KEYCODE_POWER)
+    fun volumeUp() = doVolume(KeyCodes.KEYCODE_VOLUME_UP)
+    fun volumeDown() = doVolume(KeyCodes.KEYCODE_VOLUME_DOWN)
 
     fun clearError() { _state.update { it.copy(error = null) } }
 

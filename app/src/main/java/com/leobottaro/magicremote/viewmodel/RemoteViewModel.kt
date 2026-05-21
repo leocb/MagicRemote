@@ -168,7 +168,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 _state.update {
                     it.copy(
                         pairingMessage = null,
-                        error = "Pairing failed. Please check the PIN and try again."
+                        error = result.errorMessage ?: "Pairing failed. Please check the PIN and try again."
                     )
                 }
             }

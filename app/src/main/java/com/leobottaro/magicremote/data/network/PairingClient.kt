@@ -14,7 +14,8 @@ import javax.net.ssl.SSLSocket
 data class PairingResult(
     val success: Boolean,
     val serverName: String? = null,
-    val serverCertificate: ByteArray? = null
+    val serverCertificate: ByteArray? = null,
+    val errorMessage: String? = null
 )
 
 class PairingClient(private val certificateManager: CertificateManager) {
@@ -86,21 +87,27 @@ class PairingClient(private val certificateManager: CertificateManager) {
 
                 PairingResult(true, "Android TV", serverCertBytes)
             } catch (e: Exception) {
+                val msg = when {
+                    e is java.net.SocketTimeoutException -> "Connection timed out"
+                    e is java.net.ConnectException -> "Connection refused"
+                    e is javax.net.ssl.SSLException -> "TLS handshake failed: ${e.message}"
+                    else -> "${e::class.simpleName}: ${e.message?.take(80)}"
+                }
                 e.printStackTrace()
                 disconnect()
-                PairingResult(false, null, null)
+                PairingResult(false, null, null, errorMessage = msg)
             }
         }
 
     private fun connect(host: InetAddress) {
         val sslContext = certificateManager.createPairingSslContext()
         val sock = sslContext.socketFactory.createSocket(host, 6467) as SSLSocket
-        sock.enabledProtocols = arrayOf("TLSv1.2", "TLSv1.3")
-        sock.startHandshake()
-        sock.soTimeout = 3000  // 3 second read timeout
+        // Don't restrict TLS versions — let the implementation negotiate
+        sock.soTimeout = 5000  // 5 second read timeout
         socket = sock
         outputStream = DataOutputStream(sock.outputStream)
         inputStream = DataInputStream(sock.inputStream)
+        sock.startHandshake()
     }
 
     fun disconnect() {
@@ -118,6 +125,6 @@ class PairingClient(private val certificateManager: CertificateManager) {
 
     private fun error(msg: String): PairingResult {
         disconnect()
-        return PairingResult(false, null, null)
+        return PairingResult(false, null, null, errorMessage = msg)
     }
 }

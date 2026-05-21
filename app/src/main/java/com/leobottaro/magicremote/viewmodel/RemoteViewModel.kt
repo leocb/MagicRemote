@@ -15,6 +15,8 @@ import com.leobottaro.magicremote.data.network.RemoteClient
 import com.leobottaro.magicremote.data.protocol.KeyCodes
 import com.leobottaro.magicremote.data.storage.ConnectionRepository
 import com.leobottaro.magicremote.data.storage.SavedConnection
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +50,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     private val pairingClient = PairingClient(certificateManager)
     private val remoteClient = RemoteClient(certificateManager)
     private val connectionRepo = ConnectionRepository(application)
+    private var pingJob: Job? = null
 
     private val _state = MutableStateFlow(RemoteUiState())
     val state: StateFlow<RemoteUiState> = _state.asStateFlow()
@@ -68,6 +71,8 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun goToConnectionList() {
+        pingJob?.cancel()
+        pingJob = null
         remoteClient.disconnect()
         pairingClient.disconnect()
         _state.update {
@@ -89,8 +94,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             try {
                 val host = InetAddress.getByName(connection.host)
-                val device = TvDevice(name = connection.name, host = host, port = 6466)
-                connectToRemote(device)
+                connectToRemote(TvDevice(name = connection.name, host = host, port = 6466))
             } catch (e: Exception) {
                 _state.update { it.copy(pairingMessage = null, error = "Cannot reach ${connection.host}") }
             }
@@ -186,6 +190,11 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                         error = null
                     )
                 }
+                // Start background ping loop to keep connection alive
+                pingJob?.cancel()
+                pingJob = viewModelScope.launch(Dispatchers.IO) {
+                    remoteClient.runPingLoop()
+                }
             } else {
                 _state.update {
                     it.copy(
@@ -234,6 +243,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun clearError() { _state.update { it.copy(error = null) } }
 
     override fun onCleared() {
+        pingJob?.cancel()
         remoteClient.disconnect()
         pairingClient.disconnect()
         super.onCleared()

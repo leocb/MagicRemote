@@ -36,8 +36,6 @@ class CertificateManager(private val context: Context) {
         private const val KEY_ALIAS = "client"
     }
 
-    // ── Client key management ──
-
     fun getOrCreateClientKeyStore(): KeyStore {
         val ks = loadKeyStore()
         if (!ks.containsAlias(KEY_ALIAS)) {
@@ -58,19 +56,16 @@ class CertificateManager(private val context: Context) {
         }
     }
 
-    /** RSA components from our client certificate (for secret computation). */
     fun getClientRsaComponents(): RsaKeyComponents? {
         val cert = getClientCertificate() ?: return null
         return extractRsaComponents(cert)
     }
 
-    /** RSA components from the TV's certificate (for secret computation). */
     fun getServerRsaComponents(): RsaKeyComponents? {
         val cert = loadTvCertificate() ?: return null
         return extractRsaComponents(cert)
     }
 
-    /** Extract RSA components from a peer certificate during TLS. */
     fun extractRsaComponents(cert: X509Certificate): RsaKeyComponents? {
         val pubKey = cert.publicKey
         if (pubKey !is RSAPublicKey) return null
@@ -80,15 +75,18 @@ class CertificateManager(private val context: Context) {
         )
     }
 
-    /** Compute the SHA-256 secret for pairing. */
     fun computeSecret(
         clientComponents: RsaKeyComponents,
         serverComponents: RsaKeyComponents,
         pairingCode: String
     ): ByteArray {
-        // Take the last 4 hex chars of the code and convert to 2 binary bytes
-        val codeHex = pairingCode.substring(2, 6) // chars 2-5 (skip first 2, take 4)
-        val codeBytes = codeHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        // Wiki: skip first 2 chars, take next 4 hex chars, decode to 2 binary bytes
+        val segment = pairingCode.substring(2, 6)
+        val codeBytes = try {
+            segment.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        } catch (_: NumberFormatException) {
+            segment.toByteArray()
+        }
 
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update(clientComponents.modulus)
@@ -99,8 +97,6 @@ class CertificateManager(private val context: Context) {
         return digest.digest()
     }
 
-    // ── TV certificate storage ──
-
     fun saveTvCertificate(certBytes: ByteArray) {
         context.openFileOutput(TV_CERT_FILE, Context.MODE_PRIVATE).use { it.write(certBytes) }
     }
@@ -110,9 +106,7 @@ class CertificateManager(private val context: Context) {
             val bytes = context.openFileInput(TV_CERT_FILE).use { it.readBytes() }
             val cf = CertificateFactory.getInstance("X.509")
             cf.generateCertificate(ByteArrayInputStream(bytes)) as X509Certificate
-        } catch (e: Exception) {
-            null
-        }
+        } catch (e: Exception) { null }
     }
 
     fun isPaired(): Boolean = context.getFileStreamPath(TV_CERT_FILE).exists()
@@ -122,26 +116,26 @@ class CertificateManager(private val context: Context) {
         context.deleteFile(KEYSTORE_FILE)
     }
 
-    // ── SSL contexts ──
-
     fun createPairingSslContext(): SSLContext {
         val trustAll = arrayOf<TrustManager>(object : X509TrustManager {
-            override fun checkClientTrusted(
-                chain: Array<out X509Certificate>?, authType: String?
-            ) = Unit
-            override fun checkServerTrusted(
-                chain: Array<out X509Certificate>?, authType: String?
-            ) = Unit
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
         })
         val ctx = SSLContext.getInstance("TLS")
-        ctx.init(null, trustAll, SecureRandom())
+        try {
+            val clientKs = getOrCreateClientKeyStore()
+            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+            kmf.init(clientKs, KEYSTORE_PASSWORD)
+            ctx.init(kmf.keyManagers, trustAll, SecureRandom())
+        } catch (_: Exception) {
+            ctx.init(null, trustAll, SecureRandom())
+        }
         return ctx
     }
 
     fun createRemoteSslContext(): SSLContext? {
         val tvCert = loadTvCertificate() ?: return null
-
         val clientKs = getOrCreateClientKeyStore()
         val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
         kmf.init(clientKs, KEYSTORE_PASSWORD)
@@ -157,8 +151,6 @@ class CertificateManager(private val context: Context) {
         return ctx
     }
 
-    // ── Private helpers ──
-
     private fun loadKeyStore(): KeyStore {
         val ks = KeyStore.getInstance("PKCS12")
         try {
@@ -170,9 +162,7 @@ class CertificateManager(private val context: Context) {
     }
 
     private fun saveKeyStore(ks: KeyStore) {
-        context.openFileOutput(KEYSTORE_FILE, Context.MODE_PRIVATE).use {
-            ks.store(it, KEYSTORE_PASSWORD)
-        }
+        context.openFileOutput(KEYSTORE_FILE, Context.MODE_PRIVATE).use { ks.store(it, KEYSTORE_PASSWORD) }
     }
 
     private fun generateKeyPair(): KeyPair {
@@ -187,15 +177,12 @@ class CertificateManager(private val context: Context) {
         val notBefore = Date()
         val notAfter = Date(notBefore.time + 10L * 365 * 24 * 60 * 60 * 1000)
 
-        val builder = JcaX509v3CertificateBuilder(
-            subject, serial, notBefore, notAfter, subject, keyPair.public
-        )
+        val builder = JcaX509v3CertificateBuilder(subject, serial, notBefore, notAfter, subject, keyPair.public)
         val signer = JcaContentSignerBuilder("SHA256WithRSA").build(keyPair.private)
         val holder = builder.build(signer)
         return JcaX509CertificateConverter().getCertificate(holder)
     }
 
-    /** Remove leading 0x00 byte from BigInteger.toByteArray() if present (sign byte). */
     private fun removeLeadingNull(bytes: ByteArray): ByteArray {
         return if (bytes.size > 1 && bytes[0] == 0.toByte()) {
             bytes.copyOfRange(1, bytes.size)

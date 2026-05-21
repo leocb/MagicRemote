@@ -120,7 +120,23 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         if (certificateManager.isPaired()) {
             connectToRemote(device)
         } else {
-            _state.update { it.copy(screen = Screen.Pairing(device)) }
+            // Initiate pairing immediately — TV shows a code in response
+            _state.update { it.copy(pairingMessage = "Connecting to TV...") }
+            viewModelScope.launch {
+                val result = pairingClient.initiatePairing(device.host)
+                if (result.success) {
+                    _state.update {
+                        it.copy(screen = Screen.Pairing(device), pairingMessage = null)
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            pairingMessage = null,
+                            error = result.errorMessage ?: "Could not initiate pairing"
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -153,12 +169,12 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     // ── Pairing ──
 
     fun submitPin(device: TvDevice, pin: String) {
-        if (pin.length < 4) return
+        if (pin.length < 6) return
 
         _state.update { it.copy(pairingMessage = "Pairing...", error = null) }
 
         viewModelScope.launch {
-            val result = pairingClient.performPairing(device.host, pin)
+            val result = pairingClient.completePairing(pin)
             if (result.success) {
                 _state.update {
                     it.copy(pairingMessage = "Pairing successful! Connecting...", error = null)
@@ -168,7 +184,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 _state.update {
                     it.copy(
                         pairingMessage = null,
-                        error = result.errorMessage ?: "Pairing failed. Please check the PIN and try again."
+                        error = result.errorMessage ?: "Pairing failed. Check the PIN and try again."
                     )
                 }
             }

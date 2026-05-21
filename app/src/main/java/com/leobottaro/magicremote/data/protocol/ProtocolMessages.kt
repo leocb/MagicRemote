@@ -29,33 +29,30 @@ fun readVarint(stream: DataInputStream): Int {
     }
 }
 
-// ── Wire format helpers ──
+// ── Wire helpers ──
 
 fun varintField(fieldNumber: Int, value: Int): ByteArray {
-    val tag = (fieldNumber shl 3) or 0 // wire type 0 = varint
-    return writeVarint(tag) + writeVarint(value)
+    return writeVarint((fieldNumber shl 3) or 0) + writeVarint(value)
 }
 
 fun lengthDelimitedField(fieldNumber: Int, value: ByteArray): ByteArray {
-    val tag = (fieldNumber shl 3) or 2 // wire type 2 = length-delimited
-    return writeVarint(tag) + writeVarint(value.size) + value
+    return writeVarint((fieldNumber shl 3) or 2) + writeVarint(value.size) + value
 }
 
-// ── Message framing (varint length prefix) ──
+// ── Frame helper (varint length prefix) ──
 
 fun frameMessage(payload: ByteArray): ByteArray {
     return writeVarint(payload.size) + payload
 }
 
-/** Read a varint-length-prefixed message from an InputStream. Returns null if not enough data. */
+/** Read a varint-length-prefixed message from InputStream. */
 fun readFrame(inputStream: InputStream): ByteArray? {
-    try {
-        val dataStream = if (inputStream is DataInputStream) inputStream else DataInputStream(inputStream)
-        // Read varint length byte-by-byte to avoid blocking on partial data
+    return try {
+        val ds = if (inputStream is DataInputStream) inputStream else DataInputStream(inputStream)
         var len = 0
         var shift = 0
         while (true) {
-            val byte = dataStream.readByte().toInt() and 0xFF
+            val byte = ds.readByte().toInt() and 0xFF
             len = len or ((byte and 0x7F) shl shift)
             if (byte and 0x80 == 0) break
             shift += 7
@@ -63,167 +60,249 @@ fun readFrame(inputStream: InputStream): ByteArray? {
         }
         if (len <= 0 || len > 1024 * 1024) return null
         val data = ByteArray(len)
-        dataStream.readFully(data)
-        return data
+        ds.readFully(data)
+        data
     } catch (_: Exception) {
-        return null
+        null
     }
 }
 
-// ── Pairing protocol messages (port 6467) ──
+// ── MessageType and Status values (from polo.proto) ──
+
+object MessageType {
+    const val PAIRING_REQUEST = 10
+    const val PAIRING_REQUEST_ACK = 11
+    const val OPTIONS = 20
+    const val CONFIGURATION = 30
+    const val CONFIGURATION_ACK = 31
+    const val SECRET = 40
+    const val SECRET_ACK = 41
+}
+
+object StatusCode {
+    const val OK = 200
+    const val ERROR = 400
+    const val BAD_CONFIGURATION = 401
+    const val BAD_SECRET = 402
+}
+
+// ── OuterMessage encoding/decoding ──
 //
-// Field layout from wiki:
-//   1: protocol_version (varint, 2)
-//   2: status (varint, 200=OK, 400=ERROR)
-//  10: payload (bytes) — nested { 1: service_name, 2: client_name }
-//  11: acknowledgment (bytes, empty)
-//  20: options (bytes) — nested { 1: { 1: type, 2: symbol_len }, 3: role }
-//  30: configuration (bytes) — nested { 1: { 1: type, 2: symbol_len }, 2: role }
-//  40: secret (bytes) — nested { 1: sha256_hash }
+// OuterMessage {
+//   protocol_version = 1 (uint32)
+//   status = 2 (Status enum)
+//   type = 3 (MessageType enum)
+//   payload = 4 (bytes)
+// }
 
-object PairingEncoder {
+object OuterMessage {
 
-    /** Message 1: client config with service_name and client_name. */
-    fun encodeClientConfig(serviceName: String, clientName: String): ByteArray {
-        val payload = lengthDelimitedField(1, serviceName.toByteArray()) +
-                lengthDelimitedField(2, clientName.toByteArray())
-        val msg = varintField(1, 2) +           // protocol_version = 2
-                varintField(2, 200) +            // status = OK
-                lengthDelimitedField(10, payload)
+    fun encode(type: Int, payload: ByteArray, protocolVersion: Int = 1, status: Int = StatusCode.OK): ByteArray {
+        val msg = varintField(1, protocolVersion) +
+                varintField(2, status) +
+                varintField(3, type) +
+                lengthDelimitedField(4, payload)
         return frameMessage(msg)
     }
 
-    /** Message 2: options — encoding type, symbol length, role. */
-    fun encodeOptions(): ByteArray {
-        // Sub-message for encoding: { type=3 (HEX), symbol_length=6 }
-        val encodingSub = varintField(1, 3) + varintField(2, 6)
-        val optionsContent = lengthDelimitedField(1, encodingSub) +
-                varintField(3, 1)   // preferred_role = ROLE_TYPE_INPUT
-        val msg = varintField(1, 2) +
-                varintField(2, 200) +
-                lengthDelimitedField(20, optionsContent)
-        return frameMessage(msg)
-    }
-
-    /** Message 3: configuration — encoding type, symbol length, role. */
-    fun encodeConfiguration(): ByteArray {
-        // Sub-message for encoding: { type=3 (HEX), symbol_length=6 }
-        val encodingSub = varintField(1, 3) + varintField(2, 6)
-        val configContent = lengthDelimitedField(1, encodingSub) +
-                varintField(2, 1)   // preferred_role = ROLE_TYPE_INPUT (field 2 here, vs field 3 in options)
-        val msg = varintField(1, 2) +
-                varintField(2, 200) +
-                lengthDelimitedField(30, configContent)
-        return frameMessage(msg)
-    }
-
-    /** Message 4: the computed SHA-256 secret (32 bytes). */
-    fun encodeSecret(sha256Hash: ByteArray): ByteArray {
-        require(sha256Hash.size == 32) { "SHA-256 hash must be 32 bytes" }
-        val secretContent = lengthDelimitedField(1, sha256Hash)
-        val msg = varintField(1, 2) +
-                varintField(2, 200) +
-                lengthDelimitedField(40, secretContent)
-        return frameMessage(msg)
-    }
-
-    /** Parse a server response and extract the acknowledgment status. */
-    data class PairingResponse(
-        val status: Int,            // 200 = OK
-        val hasAck: Boolean         // true if field 11 (empty ack) is present
+    data class Result(
+        val protocolVersion: Int,
+        val status: Int,
+        val type: Int,
+        val payload: ByteArray?
     )
 
-    fun parseResponse(data: ByteArray): PairingResponse {
+    fun decode(data: ByteArray): Result {
         val stream = DataInputStream(data.inputStream())
+        var protocolVersion = 0
         var status = 0
-        var hasAck = false
+        var type = 0
+        var payload: ByteArray? = null
+
         while (stream.available() > 0) {
             val tag = readVarint(stream)
             val fieldNum = tag ushr 3
             val wireType = tag and 0x07
             when (fieldNum) {
-                1 -> readVarint(stream)  // protocol_version
+                1 -> protocolVersion = readVarint(stream)
                 2 -> status = readVarint(stream)
-                11 -> {
-                    if (wireType == 2) {
-                        val len = readVarint(stream)
-                        // Empty ack: len should be 0
-                        hasAck = true
-                    }
-                }
-                10, 20, 30, 40 -> {
-                    if (wireType == 2) {
-                        val len = readVarint(stream)
-                        stream.skipBytes(len)
-                    }
-                }
+                3 -> type = readVarint(stream)
+                4 -> payload = readLengthDelimited(stream)
                 else -> skipField(stream, wireType)
             }
         }
-        return PairingResponse(status, hasAck)
+        return Result(protocolVersion, status, type, payload)
     }
-
-    /** Check if this response is the "acknowledgment" containing field 11. */
-    fun isAck(data: ByteArray): Boolean = parseResponse(data).hasAck
 }
 
-// ── Remote control protocol messages (port 6466) ──
+// ── Sub-message encoding ──
+
+object PairingRequest {
+    fun encode(serviceName: String, clientName: String): ByteArray {
+        return lengthDelimitedField(1, serviceName.toByteArray()) +
+                lengthDelimitedField(2, clientName.toByteArray())
+    }
+}
+
+object OptionsMsg {
+    fun encode(encodingType: Int = 3, symbolLength: Int = 6, role: Int = 1): ByteArray {
+        val encoding = varintField(1, encodingType) + varintField(2, symbolLength)
+        return lengthDelimitedField(1, encoding) +  // input_encodings
+                varintField(3, role)   // preferred_role (field 3 = RoleType)
+    }
+}
+
+object ConfigurationMsg {
+    fun encode(encodingType: Int = 3, symbolLength: Int = 6, clientRole: Int = 1): ByteArray {
+        val encoding = varintField(1, encodingType) + varintField(2, symbolLength)
+        return lengthDelimitedField(1, encoding) +  // encoding
+                varintField(2, clientRole)           // client_role
+    }
+}
+
+object SecretMsg {
+    fun encode(secretBytes: ByteArray): ByteArray {
+        require(secretBytes.size == 32) { "SHA-256 hash must be 32 bytes" }
+        return lengthDelimitedField(1, secretBytes)  // secret
+    }
+}
+
+// ── Parsing helper for reading the result of a secret ack ──
+
+object SecretAck {
+    fun decode(payload: ByteArray): ByteArray? {
+        val stream = DataInputStream(payload.inputStream())
+        while (stream.available() > 0) {
+            val tag = readVarint(stream)
+            val fieldNum = tag ushr 3
+            val wireType = tag and 0x07
+            if (fieldNum == 1 && wireType == 2) {
+                return readLengthDelimited(stream)
+            }
+            skipField(stream, wireType)
+        }
+        return null
+    }
+}
+
+// ── Remote control protocol (port 6466) ──
 //
-// Key command: field 10 = { field 1: key_code, field 2: action }
+// Key command: OuterMessage-like structure: field 10 = KeyEvent { field 1: key_code, field 2: action }
 //   action 1 = press/down, 2 = release/up
-//
-// 1st config: field 1 = nested { 302, "androidtv-remote", "1", "1.0.0" }
-// 2nd config: field 3 = nested { 302 }
 
-object RemoteEncoder {
-
-    /** Encode a key press (action=1) or release (action=2). */
-    fun encodeKeyEvent(keyCode: Int, action: Int): ByteArray {
-        val inner = varintField(1, keyCode) + varintField(2, action)
+object RemoteKeyEvent {
+    fun keyPress(keyCode: Int): ByteArray {
+        val inner = varintField(1, keyCode) + varintField(2, 1)  // action = 1 (press)
         val msg = lengthDelimitedField(10, inner)
         return frameMessage(msg)
     }
 
-    fun keyPress(keyCode: Int): ByteArray = encodeKeyEvent(keyCode, 1)
-    fun keyRelease(keyCode: Int): ByteArray = encodeKeyEvent(keyCode, 2)
+    fun keyRelease(keyCode: Int): ByteArray {
+        val inner = varintField(1, keyCode) + varintField(2, 2)  // action = 2 (release)
+        val msg = lengthDelimitedField(10, inner)
+        return frameMessage(msg)
+    }
+}
 
+object RemoteConfig {
     /** 1st config message sent after connecting to port 6466. */
-    fun encodeRemoteConfig(): ByteArray {
-        // Nested sub-message: { 3: 1, 4: "1", 5: "androidtv-remote", 6: "1.0.0" }
+    fun encodeConfig(): ByteArray {
         val subInner = varintField(3, 1) +
                 lengthDelimitedField(4, "1".toByteArray()) +
                 lengthDelimitedField(5, "androidtv-remote".toByteArray()) +
                 lengthDelimitedField(6, "1.0.0".toByteArray())
-        // Inner: { 1: 622, 2: subInner }
         val inner = varintField(1, 622) + lengthDelimitedField(2, subInner)
-        // Wrapper field 1
         val msg = lengthDelimitedField(1, inner)
         return frameMessage(msg)
     }
 
     /** 2nd config ack message. */
-    fun encodeRemoteConfigAck(): ByteArray {
+    fun encodeConfigAck(): ByteArray {
         val inner = varintField(1, 622)
-        val msg = lengthDelimitedField(3, inner) // field 3
+        val msg = lengthDelimitedField(3, inner)
         return frameMessage(msg)
-    }
-
-    /** Parse server's initial info message (ignore content). */
-    fun isAck(data: ByteArray): Boolean {
-        // An ack is a short message with field 3 (tag 18 or 26 depending)
-        return data.size < 10
     }
 }
 
-// ── Shared helpers ──
+// ── Wiki-style protocol (type encoded as payload field number) ──
+//
+// The wiki-based protocol encodes the message type as the field number used for the payload:
+//   field 10 = PAIRING_REQUEST payload
+//   field 11 = acknowledgment (empty)
+//   field 20 = OPTIONS payload
+//   field 30 = CONFIGURATION payload
+//   field 31 = CONFIGURATION_ACK (empty)
+//   field 40 = SECRET payload
+//   field 41 = SECRET_ACK payload
+
+object PoloMessage {
+    fun encodeRequest(payload: ByteArray): ByteArray {
+        return frameMessage(
+            varintField(1, 2) + varintField(2, StatusCode.OK) + lengthDelimitedField(10, payload)
+        )
+    }
+
+    fun encodeOptions(payload: ByteArray): ByteArray {
+        return frameMessage(
+            varintField(1, 2) + varintField(2, StatusCode.OK) + lengthDelimitedField(20, payload)
+        )
+    }
+
+    fun encodeConfiguration(payload: ByteArray): ByteArray {
+        return frameMessage(
+            varintField(1, 2) + varintField(2, StatusCode.OK) + lengthDelimitedField(30, payload)
+        )
+    }
+
+    fun encodeSecret(payload: ByteArray): ByteArray {
+        return frameMessage(
+            varintField(1, 2) + varintField(2, StatusCode.OK) + lengthDelimitedField(40, payload)
+        )
+    }
+
+    data class Reply(val status: Int, val fieldNum: Int, val payload: ByteArray?)
+
+    fun decode(data: ByteArray): Reply {
+        val stream = DataInputStream(data.inputStream())
+        var status = 0
+        var fieldNum = 0
+        var payload: ByteArray? = null
+        while (stream.available() > 0) {
+            val tag = readVarint(stream)
+            val fn = tag ushr 3
+            val wt = tag and 0x07
+            when (fn) {
+                1 -> readVarint(stream) // protocol_version
+                2 -> status = readVarint(stream)
+                10, 11, 20, 30, 31, 40, 41 -> {
+                    fieldNum = fn
+                    if (wt == 2) {
+                        val len = readVarint(stream)
+                        payload = if (len > 0) {
+                            val d = ByteArray(len); stream.readFully(d); d
+                        } else ByteArray(0)
+                    } else skipField(stream, wt)
+                }
+                else -> skipField(stream, wt)
+            }
+        }
+        return Reply(status, fieldNum, payload)
+    }
+}
+
+// ── Shared helper ──
+
+fun readLengthDelimited(stream: DataInputStream): ByteArray {
+    val len = readVarint(stream)
+    val data = ByteArray(len)
+    stream.readFully(data)
+    return data
+}
 
 private fun skipField(stream: DataInputStream, wireType: Int) {
     when (wireType) {
         0 -> readVarint(stream)
-        2 -> {
-            val len = readVarint(stream)
-            stream.skipBytes(len)
-        }
+        2 -> { val len = readVarint(stream); stream.skipBytes(len) }
         else -> throw IllegalArgumentException("Unknown wire type: $wireType")
     }
 }

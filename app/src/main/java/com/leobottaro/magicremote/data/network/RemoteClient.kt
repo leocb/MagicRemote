@@ -1,7 +1,8 @@
 package com.leobottaro.magicremote.data.network
 
 import com.leobottaro.magicremote.data.certificate.CertificateManager
-import com.leobottaro.magicremote.data.protocol.RemoteEncoder
+import com.leobottaro.magicremote.data.protocol.RemoteConfig
+import com.leobottaro.magicremote.data.protocol.RemoteKeyEvent
 import com.leobottaro.magicremote.data.protocol.readFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -34,7 +35,7 @@ class RemoteClient(private val certificateManager: CertificateManager) {
             }
 
             // 2. Send 1st config
-            val config1 = RemoteEncoder.encodeRemoteConfig()
+            val config1 = RemoteConfig.encodeConfig()
             outputStream!!.write(config1)
             outputStream!!.flush()
 
@@ -45,7 +46,7 @@ class RemoteClient(private val certificateManager: CertificateManager) {
             }
 
             // 4. Send 2nd config ack
-            val config2 = RemoteEncoder.encodeRemoteConfigAck()
+            val config2 = RemoteConfig.encodeConfigAck()
             outputStream!!.write(config2)
             outputStream!!.flush()
 
@@ -70,11 +71,11 @@ class RemoteClient(private val certificateManager: CertificateManager) {
             val os = outputStream ?: return@withContext false
 
             // Press (action=1)
-            val press = RemoteEncoder.keyPress(keyCode)
+            val press = RemoteKeyEvent.keyPress(keyCode)
             os.write(press)
 
             // Release (action=2)
-            val release = RemoteEncoder.keyRelease(keyCode)
+            val release = RemoteKeyEvent.keyRelease(keyCode)
             os.write(release)
 
             os.flush()

@@ -75,11 +75,11 @@ fun PairingScreen(
 
                     OutlinedTextField(
                         value = pin,
-                        onValueChange = { if (it.length <= 6) pin = it.filter { c -> c.isDigit() } },
-                        label = { Text("PIN") },
+                        onValueChange = { if (it.length <= 8) pin = it },
+                        label = { Text("Pairing code") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.NumberPassword,
+                            keyboardType = KeyboardType.Password,
                             imeAction = ImeAction.Go
                         ),
                         keyboardActions = KeyboardActions(
@@ -100,7 +100,7 @@ fun PairingScreen(
 
                     Button(
                         onClick = { onSubmitPin(pin) },
-                        enabled = pin.length >= 4 && pairingMessage == null,
+                        enabled = pin.length >= 6 && pairingMessage == null,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)

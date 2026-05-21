@@ -1,5 +1,6 @@
 package com.leobottaro.magicremote.data.network
 
+import android.util.Log
 import com.leobottaro.magicremote.data.certificate.CertificateManager
 import com.leobottaro.magicremote.data.protocol.RemoteConfig
 import com.leobottaro.magicremote.data.protocol.RemoteKeyEvent
@@ -7,83 +8,67 @@ import com.leobottaro.magicremote.data.protocol.readFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.DataOutputStream
-import java.io.InputStream
 import java.net.InetAddress
 import javax.net.ssl.SSLSocket
 
 class RemoteClient(private val certificateManager: CertificateManager) {
 
-    private var socket: SSLSocket? = null
-    private var outputStream: DataOutputStream? = null
-    private var inputStream: InputStream? = null
-    private var configured = false
+    private var lastHost: InetAddress? = null
 
-    suspend fun connect(host: InetAddress, port: Int = 6466): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val sslContext = certificateManager.createRemoteSslContext() ?: return@withContext false
-            val sock = sslContext.socketFactory.createSocket(host, port) as SSLSocket
-            sock.enabledProtocols = arrayOf("TLSv1.2", "TLSv1.3")
-            sock.startHandshake()
-            sock.soTimeout = 2000
-            socket = sock
-            outputStream = DataOutputStream(sock.outputStream)
-            inputStream = sock.inputStream
-
-            if (readFrame(inputStream!!) == null) { disconnect(); return@withContext false }
-            outputStream!!.write(RemoteConfig.encodeConfig())
-            outputStream!!.flush()
-            if (readFrame(inputStream!!) == null) { disconnect(); return@withContext false }
-            outputStream!!.write(RemoteConfig.encodeConfigAck())
-            outputStream!!.flush()
-            for (i in 0 until 3) {
-                if (readFrame(inputStream!!) == null) break
-            }
-
-            configured = true
-            true
-        } catch (e: Exception) {
-            e.printStackTrace()
-            disconnect()
-            false
-        }
+    suspend fun connect(host: InetAddress): Boolean = withContext(Dispatchers.IO) {
+        lastHost = host
+        connectAndSend(null)
     }
 
     suspend fun sendKeyPress(keyCode: Int): Boolean = withContext(Dispatchers.IO) {
+        val host = lastHost ?: return@withContext false
+        connectAndSend(keyCode)
+    }
+
+    private fun connectAndSend(keyCode: Int?): Boolean {
+        var sock: SSLSocket? = null
         try {
-            val os = outputStream ?: return@withContext false
-            drainPings()
-            os.write(RemoteKeyEvent.keyPress(keyCode))
-            os.write(RemoteKeyEvent.keyRelease(keyCode))
-            os.flush()
-            true
+            val ctx = certificateManager.createRemoteSslContext() ?: return false
+            val host = lastHost ?: return false
+            sock = ctx.socketFactory.createSocket(host, 6466) as SSLSocket
+            sock.enabledProtocols = arrayOf("TLSv1.2", "TLSv1.3")
+            sock.startHandshake()
+
+            val os = DataOutputStream(sock.outputStream)
+            val ins = sock.inputStream
+            sock.soTimeout = 5000
+
+            // Wiki: server sends info first, then we send config1
+            val serverInfo = readFrame(ins) ?: return false
+
+            // Send config1
+            os.write(RemoteConfig.encodeConfig()); os.flush()
+
+            // Read two responses: [10,3,8,255,4] and [18,0]
+            val resp1 = readFrame(ins) ?: return false
+            val resp2 = readFrame(ins) // [18,0] — trigger for config2
+
+            // Send config2 ACK (field 2 per wiki)
+            os.write(RemoteConfig.encodeConfigAck()); os.flush()
+
+            // Drain status messages (power, app, player)
+            for (i in 0 until 5) { if (readFrame(ins) == null) break }
+
+            // Send key command if requested
+            if (keyCode != null) {
+                os.write(RemoteKeyEvent.keyPress(keyCode))
+                os.write(RemoteKeyEvent.keyRelease(keyCode))
+                os.flush()
+                Log.d("RemoteClient", "Key $keyCode sent")
+            }
+            return true
         } catch (e: Exception) {
-            e.printStackTrace()
-            disconnect()
-            false
+            Log.e("RemoteClient", "connectAndSend failed", e)
+            return false
+        } finally {
+            try { sock?.close() } catch (_: Exception) { }
         }
     }
 
-    private fun drainPings() {
-        val `is` = inputStream ?: return
-        try {
-            while (`is`.available() > 0) {
-                val frame = readFrame(`is`) ?: break
-                if (frame.size >= 1 && frame[0].toInt() == 66) {
-                    val pong = byteArrayOf(74, 2, 8, 25)
-                    outputStream?.write(pong)
-                    outputStream?.flush()
-                }
-            }
-        } catch (_: Exception) { }
-    }
-
-    fun isConnected(): Boolean = socket?.isConnected == true && !socket!!.isClosed && configured
-
-    fun disconnect() {
-        configured = false
-        try { socket?.close() } catch (_: Exception) { }
-        socket = null
-        outputStream = null
-        inputStream = null
-    }
+    fun disconnect() { }
 }

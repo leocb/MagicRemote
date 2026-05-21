@@ -55,7 +55,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     init {
         val connections = connectionRepo.list()
         if (connections.isEmpty() && certificateManager.isPaired()) {
-            // Previously paired before connection saving existed
             _state.update {
                 it.copy(
                     savedConnections = connections,
@@ -67,8 +66,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
             _state.update { it.copy(savedConnections = connections, screen = Screen.ConnectionList) }
         }
     }
-
-    // ── Screen navigation ──
 
     fun goToConnectionList() {
         remoteClient.disconnect()
@@ -86,8 +83,6 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun goToDiscovery() {
         _state.update { it.copy(screen = Screen.Discovery) }
     }
-
-    // ── Connection management ──
 
     fun connectToSaved(connection: SavedConnection) {
         _state.update { it.copy(pairingMessage = "Connecting to ${connection.name}...", error = null) }
@@ -109,26 +104,18 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun deleteConnection(connection: SavedConnection) {
         connectionRepo.delete(connection.id)
-        if (connectionRepo.count() == 0) {
-            certificateManager.clearPairing()
-        }
+        if (connectionRepo.count() == 0) certificateManager.clearPairing()
         val remaining = connectionRepo.list()
         _state.update { it.copy(savedConnections = remaining) }
-        if (remaining.isEmpty()) {
-            _state.update { it.copy(screen = Screen.Discovery) }
-        }
+        if (remaining.isEmpty()) _state.update { it.copy(screen = Screen.Discovery) }
     }
 
     private fun saveConnection(host: String, name: String) {
-        // Avoid duplicates by checking if the host is already saved
-        val existing = connectionRepo.list().any { it.host == host }
-        if (!existing) {
+        if (connectionRepo.list().none { it.host == host }) {
             connectionRepo.add(SavedConnection(name = name, host = host))
             _state.update { it.copy(savedConnections = connectionRepo.list()) }
         }
     }
-
-    // ── Discovery ──
 
     fun startDiscovery() {
         val ctx = getApplication<Application>()
@@ -143,42 +130,30 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
         beginScan()
     }
 
-    fun onLocationPermissionGranted() {
-        _state.update { it.copy(needsLocationPermission = false) }
-        beginScan()
-    }
-
-    fun onLocationPermissionDenied() {
-        _state.update { it.copy(needsLocationPermission = false, error = "Location permission is required.") }
-    }
+    fun onLocationPermissionGranted() { _state.update { it.copy(needsLocationPermission = false) }; beginScan() }
+    fun onLocationPermissionDenied() { _state.update { it.copy(needsLocationPermission = false, error = "Location permission required.") } }
 
     private fun beginScan() {
         _state.update { it.copy(isScanning = true, error = null, devices = emptyList()) }
         viewModelScope.launch {
             discoveryManager.discoverTvs().collect { device ->
-                val existing = _state.value.devices.any { it.host == device.host }
-                if (!existing) {
-                    _state.update { state -> state.copy(devices = state.devices + device, isScanning = false) }
+                if (_state.value.devices.none { it.host == device.host }) {
+                    _state.update { it.copy(devices = it.devices + device, isScanning = false) }
                 }
             }
         }
     }
 
-    fun toggleManualIpEntry() {
-        _state.update { it.copy(showManualIpEntry = !it.showManualIpEntry) }
-    }
+    fun toggleManualIpEntry() { _state.update { it.copy(showManualIpEntry = !it.showManualIpEntry) } }
 
     fun connectToManualIp(ip: String) {
         try {
             val address = InetAddress.getByName(ip.trim())
-            val device = TvDevice(name = ip.trim(), host = address, port = 6466)
-            selectDevice(device)
+            selectDevice(TvDevice(name = ip.trim(), host = address, port = 6466))
         } catch (e: Exception) {
             _state.update { it.copy(error = "Invalid IP address.") }
         }
     }
-
-    // ── Device selection / pairing ──
 
     fun selectDevice(device: TvDevice) {
         if (certificateManager.isPaired()) {
@@ -190,12 +165,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                 if (result.success) {
                     _state.update { it.copy(screen = Screen.Pairing(device), pairingMessage = null) }
                 } else {
-                    _state.update {
-                        it.copy(
-                            pairingMessage = null,
-                            error = result.errorMessage ?: "Could not initiate pairing"
-                        )
-                    }
+                    _state.update { it.copy(pairingMessage = null, error = result.errorMessage ?: "Pairing failed") }
                 }
             }
         }
@@ -204,9 +174,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun connectToRemote(device: TvDevice) {
         _state.update { it.copy(pairingMessage = "Connecting...", error = null) }
         viewModelScope.launch {
-            val connected = remoteClient.connect(device.host)
-            if (connected) {
-                // Save connection on first successful remote connect
+            if (remoteClient.connect(device.host)) {
                 val host = device.host.hostAddress ?: device.name
                 saveConnection(host, device.name)
                 _state.update {
@@ -223,10 +191,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
                     it.copy(
                         screen = Screen.Pairing(device),
                         pairingMessage = null,
-                        error = "Connection failed. Please pair again."
+                        error = "Connection failed."
                     )
                 }
-                certificateManager.clearPairing()
             }
         }
     }
@@ -234,29 +201,18 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun submitPin(device: TvDevice, pin: String) {
         if (pin.length < 6) return
         _state.update { it.copy(pairingMessage = "Pairing...", error = null) }
-
         viewModelScope.launch {
             val result = pairingClient.completePairing(pin)
             if (result.success) {
                 _state.update { it.copy(pairingMessage = "Pairing successful! Connecting...", error = null) }
                 connectToRemote(device)
             } else {
-                _state.update {
-                    it.copy(
-                        pairingMessage = null,
-                        error = result.errorMessage ?: "Pairing failed."
-                    )
-                }
+                _state.update { it.copy(pairingMessage = null, error = result.errorMessage ?: "Pairing failed.") }
             }
         }
     }
 
-    fun cancelPairing() {
-        pairingClient.disconnect()
-        goToConnectionList()
-    }
-
-    // ── Remote control ──
+    fun cancelPairing() { pairingClient.disconnect(); goToConnectionList() }
 
     fun sendKeyEvent(keyCode: Int) {
         viewModelScope.launch {
@@ -275,9 +231,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
     fun volumeDown() = sendKeyEvent(KeyCodes.KEYCODE_VOLUME_DOWN)
     fun pressPower() = sendKeyEvent(KeyCodes.KEYCODE_POWER)
 
-    fun clearError() {
-        _state.update { it.copy(error = null) }
-    }
+    fun clearError() { _state.update { it.copy(error = null) } }
 
     override fun onCleared() {
         remoteClient.disconnect()

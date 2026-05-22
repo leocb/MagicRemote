@@ -9,16 +9,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.pointer.PointerEvent
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.leobottaro.magicremote.data.discovery.TvDevice
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 @Composable
@@ -38,7 +40,8 @@ fun RemoteControlScreen(
     onDisconnect: () -> Unit,
     onRelativeEvent: (dx: Int, dy: Int) -> Unit = { _, _ -> },
     onButtonPress: () -> Unit = {},
-    onButtonRelease: () -> Unit = {}
+    onButtonRelease: () -> Unit = {},
+    onButtonRepeat: () -> Unit = {}
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -55,19 +58,20 @@ fun RemoteControlScreen(
                 Text("Volume", fontSize = 13.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(4.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    VolBtn("-", onVolumeUp, onButtonPress, onButtonRelease, Modifier.weight(1f))
+                    VolBtn("-", onVolumeUp, onButtonPress, onButtonRelease, onButtonRepeat, Modifier.weight(1f))
                     Spacer(Modifier.width(12.dp))
-                    VolBtn("+", onVolumeDown, onButtonPress, onButtonRelease, Modifier.weight(1f))
+                    VolBtn("+", onVolumeDown, onButtonPress, onButtonRelease, onButtonRepeat, Modifier.weight(1f))
                 }
             }
         }
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-            NavBtn("Home", onHome, onButtonPress, onButtonRelease)
-            NavBtn("Power", onPower, onButtonPress, onButtonRelease)
-            NavBtn("Back", onBack, onButtonPress, onButtonRelease)
+            NavBtn("Home", onHome, onButtonPress, onButtonRelease, onButtonRepeat)
+            NavBtn("Power", onPower, onButtonPress, onButtonRelease, onButtonRepeat)
+            NavBtn("Back", onBack, onButtonPress, onButtonRelease, onButtonRepeat)
         }
         Spacer(Modifier.weight(1f))
+
         Card(Modifier.fillMaxWidth().height(200.dp), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
             Box(Modifier.fillMaxSize().pointerInput(Unit) {
                 awaitEachGesture {
@@ -88,52 +92,66 @@ fun RemoteControlScreen(
         }
         Spacer(Modifier.height(12.dp))
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            PadBtn("▲", onUp, onButtonPress, onButtonRelease)
+            PadBtn("▲", onUp, onButtonPress, onButtonRelease, onButtonRepeat)
             Spacer(Modifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                PadBtn("◄", onLeft, onButtonPress, onButtonRelease)
+                PadBtn("◄", onLeft, onButtonPress, onButtonRelease, onButtonRepeat)
                 Spacer(Modifier.width(6.dp))
-                OkBtn(onEnter, onButtonPress, onButtonRelease)
+                OkBtn(onEnter, onButtonPress, onButtonRelease, onButtonRepeat)
                 Spacer(Modifier.width(6.dp))
-                PadBtn("►", onRight, onButtonPress, onButtonRelease)
+                PadBtn("►", onRight, onButtonPress, onButtonRelease, onButtonRepeat)
             }
             Spacer(Modifier.height(6.dp))
-            PadBtn("▼", onDown, onButtonPress, onButtonRelease)
+            PadBtn("▼", onDown, onButtonPress, onButtonRelease, onButtonRepeat)
         }
         Spacer(Modifier.height(16.dp))
     }
 }
 
-private fun Modifier.gesture(onClick: () -> Unit, onPress: () -> Unit, onRelease: () -> Unit) = this.pointerInput(onClick) {
+private fun Modifier.gesture(
+    onClick: () -> Unit, onPress: () -> Unit, onRelease: () -> Unit, onRepeat: () -> Unit, scope: kotlinx.coroutines.CoroutineScope
+) = this.pointerInput(onClick) {
     awaitEachGesture {
         awaitFirstDown()
         onPress()
+        val job = scope.launch {
+            delay(200)
+            while (isActive) {
+                onRepeat()
+                delay(50)
+            }
+        }
         val up = waitForUpOrCancellation()
+        job.cancel()
         onRelease()
         if (up != null) onClick()
     }
 }
 
 @Composable
-private fun PadBtn(l: String, oc: () -> Unit, op: () -> Unit, or: () -> Unit) {
-    Box(Modifier.size(64.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant).gesture(oc, op, or),
+private fun PadBtn(l: String, oc: () -> Unit, op: () -> Unit, or: () -> Unit, orpt: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    Box(Modifier.size(64.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant).gesture(oc, op, or, orpt, scope),
         contentAlignment = Alignment.Center) { Text(l, fontSize = 20.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 }
 
 @Composable
-private fun OkBtn(oc: () -> Unit, op: () -> Unit, or: () -> Unit) {
-    Box(Modifier.size(64.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).gesture(oc, op, or),
+private fun OkBtn(oc: () -> Unit, op: () -> Unit, or: () -> Unit, orpt: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    Box(Modifier.size(64.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).gesture(oc, op, or, orpt, scope),
         contentAlignment = Alignment.Center) { Text("OK", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary) }
 }
 
 @Composable
-private fun VolBtn(l: String, oc: () -> Unit, op: () -> Unit, or: () -> Unit, modifier: Modifier = Modifier) {
-    Box(modifier.height(48.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).gesture(oc, op, or),
+private fun VolBtn(l: String, oc: () -> Unit, op: () -> Unit, or: () -> Unit, orpt: () -> Unit, modifier: Modifier = Modifier) {
+    val scope = rememberCoroutineScope()
+    Box(modifier.height(48.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant).gesture(oc, op, or, orpt, scope),
         contentAlignment = Alignment.Center) { Text(l, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
 }
 
 @Composable
-private fun NavBtn(l: String, oc: () -> Unit, op: () -> Unit, or: () -> Unit) {
-    Box(Modifier.height(40.dp).clip(RoundedCornerShape(12.dp)).gesture(oc, op, or),
+private fun NavBtn(l: String, oc: () -> Unit, op: () -> Unit, or: () -> Unit, orpt: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    Box(Modifier.height(40.dp).clip(RoundedCornerShape(12.dp)).gesture(oc, op, or, orpt, scope),
         contentAlignment = Alignment.Center) { Text(l, fontSize = 14.sp, fontWeight = FontWeight.Medium) }
 }

@@ -114,7 +114,8 @@ private fun Content(
             onDisconnect = { viewModel.goToConnectionList() },
             onRelativeEvent = { dx, dy -> viewModel.sendRelativeEvent(dx, dy) },
             onButtonPress = { viewModel.onButtonPress() },
-            onButtonRelease = { viewModel.onButtonRelease() }
+            onButtonRelease = { viewModel.onButtonRelease() },
+            onButtonRepeat = { viewModel.onButtonRepeat() }
         )
     }
 }

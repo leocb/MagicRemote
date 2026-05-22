@@ -192,7 +192,7 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun cancelPairing() { pairingClient.disconnect(); goToConnectionList() }
 
-    // ── Haptic feedback (triggered by UI press/release events) ──
+    // ── Haptic feedback ──
 
     private fun vibrate(ms: Long) {
         val v = vibrator ?: return
@@ -210,8 +210,9 @@ class RemoteViewModel(application: Application) : AndroidViewModel(application) 
 
     fun onButtonPress() { vibrate(5) }
     fun onButtonRelease() { vibrate(2) }
+    fun onButtonRepeat() { vibrate(1) }
 
-    // ── Key actions (no vibration — handled by UI callbacks above) ──
+    // ── Key actions ──
 
     private fun doKey(keyCode: Int) {
         if (_state.value.testMode) { Log.d("TestRemote", "Key $keyCode"); return }

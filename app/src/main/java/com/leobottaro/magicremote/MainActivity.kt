@@ -1,6 +1,7 @@
 package com.leobottaro.magicremote
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -23,6 +24,11 @@ import com.leobottaro.magicremote.viewmodel.Screen
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val isDebug = try {
+            applicationContext.packageManager.getApplicationInfo(packageName, 0).flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+        } catch (_: Exception) { false }
+
         enableEdgeToEdge()
         setContent {
             MagicRemoteTheme {
@@ -39,7 +45,8 @@ class MainActivity : ComponentActivity() {
                 Content(
                     state = state,
                     viewModel = viewModel,
-                    onRequestLocationPermission = { permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
+                    onRequestLocationPermission = { permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION) },
+                    isDebug = isDebug
                 )
             }
         }
@@ -50,17 +57,20 @@ class MainActivity : ComponentActivity() {
 private fun Content(
     state: com.leobottaro.magicremote.viewmodel.RemoteUiState,
     viewModel: RemoteViewModel,
-    onRequestLocationPermission: () -> Unit
+    onRequestLocationPermission: () -> Unit,
+    isDebug: Boolean = false
 ) {
     when (val currentScreen = state.screen) {
         is Screen.ConnectionList -> ConnectionListScreen(
             connections = state.savedConnections,
             error = state.error,
             pairingMessage = state.pairingMessage,
+            showTestButton = isDebug,
             onConnect = { viewModel.connectToSaved(it) },
             onRename = { conn, name -> viewModel.renameConnection(conn, name) },
             onDelete = { viewModel.deleteConnection(it) },
             onAddNew = { viewModel.goToDiscovery() },
+            onTestMode = { viewModel.enterTestMode() },
             onClearError = { viewModel.clearError() }
         )
 
@@ -102,7 +112,9 @@ private fun Content(
             onVolumeDown = { viewModel.volumeDown() },
             onPower = { viewModel.pressPower() },
             onDisconnect = { viewModel.goToConnectionList() },
-            onRelativeEvent = { dx, dy -> viewModel.sendRelativeEvent(dx, dy) }
+            onRelativeEvent = { dx, dy -> viewModel.sendRelativeEvent(dx, dy) },
+            onButtonPress = { viewModel.onButtonPress() },
+            onButtonRelease = { viewModel.onButtonRelease() }
         )
     }
 }

@@ -27,183 +27,84 @@ fun ConnectionListScreen(
     connections: List<SavedConnection>,
     error: String?,
     pairingMessage: String?,
+    showTestButton: Boolean = false,
     onConnect: (SavedConnection) -> Unit,
     onRename: (SavedConnection, String) -> Unit,
     onDelete: (SavedConnection) -> Unit,
     onAddNew: () -> Unit,
+    onTestMode: () -> Unit = {},
     onClearError: () -> Unit
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp)
-    ) {
+    Box(modifier = Modifier.fillMaxSize().padding(24.dp)) {
         Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(modifier = Modifier.height(48.dp))
-
-            Text(
-                text = "Magic Remote",
-                fontSize = 28.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-
+            Text("Magic Remote", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = "Saved TVs",
-                fontSize = 16.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
+            Text("Saved TVs", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(modifier = Modifier.height(24.dp))
 
             if (connections.isEmpty()) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "No saved TVs yet",
-                        fontSize = 18.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Tap below to discover and pair a new TV",
-                        fontSize = 14.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("No saved TVs yet", fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Tap below to discover and pair a new TV", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                 }
             }
 
-            pairingMessage?.let { msg ->
-                CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(text = msg, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            pairingMessage?.let {
+                CircularProgressIndicator(Modifier.size(24.dp))
+                Spacer(Modifier.height(8.dp))
+                Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            LazyColumn(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(connections) { conn ->
-                    ConnectionCard(
-                        connection = conn,
-                        onConnect = { onConnect(conn) },
-                        onRename = { newName -> onRename(conn, newName) },
-                        onDelete = { onDelete(conn) }
-                    )
+                    ConnectionCard(conn, onConnect = { onConnect(conn) }, onRename = { onRename(conn, it) }, onDelete = { onDelete(conn) })
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(Modifier.height(16.dp))
+            OutlinedButton(onClick = onAddNew) { Text("Add new TV") }
 
-            OutlinedButton(onClick = onAddNew) {
-                Text("Add new TV")
+            if (showTestButton) {
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onTestMode) { Text("Test Remote (debug)", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
 
-        error?.let { msg ->
-            Snackbar(
-                modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
-                action = { TextButton(onClick = onClearError) { Text("Dismiss") } }
-            ) { Text(msg) }
-        }
+        error?.let { Snackbar(Modifier.align(Alignment.BottomCenter).padding(16.dp), action = { TextButton(onClick = onClearError) { Text("Dismiss") } }) { Text(it) } }
     }
 }
 
 @Composable
-private fun ConnectionCard(
-    connection: SavedConnection,
-    onConnect: () -> Unit,
-    onRename: (String) -> Unit,
-    onDelete: () -> Unit
-) {
-    var showRenameDialog by remember { mutableStateOf(false) }
-    var showDeleteConfirm by remember { mutableStateOf(false) }
+private fun ConnectionCard(connection: SavedConnection, onConnect: () -> Unit, onRename: (String) -> Unit, onDelete: () -> Unit) {
+    var showRename by remember { mutableStateOf(false) }
+    var showDelete by remember { mutableStateOf(false) }
 
-    Card(
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onConnect),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
+    Card(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onConnect), shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
                 Text(connection.name, fontSize = 16.sp, fontWeight = FontWeight.Medium)
-                Text(
-                    connection.host,
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text(connection.host, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Row {
-                IconButton(onClick = { showRenameDialog = true }) {
-                    Icon(Icons.Default.Edit, contentDescription = "Rename")
-                }
-                IconButton(onClick = { showDeleteConfirm = true }) {
-                    Icon(Icons.Default.Delete, contentDescription = "Delete")
-                }
+                IconButton(onClick = { showRename = true }) { Icon(Icons.Default.Edit, contentDescription = "Rename") }
+                IconButton(onClick = { showDelete = true }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
             }
         }
     }
 
-    if (showRenameDialog) {
-        RenameDialog(
-            currentName = connection.name,
-            onConfirm = { newName -> onRename(newName); showRenameDialog = false },
-            onDismiss = { showRenameDialog = false }
-        )
-    }
-
-    if (showDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("Remove TV") },
-            text = { Text("Remove \"${connection.name}\" from saved TVs?") },
-            confirmButton = {
-                TextButton(onClick = { onDelete(); showDeleteConfirm = false }) {
-                    Text("Remove", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
-            }
-        )
-    }
+    if (showRename) RenameDialog(connection.name, onConfirm = { onRename(it); showRename = false }, onDismiss = { showRename = false })
+    if (showDelete) AlertDialog(onDismissRequest = { showDelete = false }, title = { Text("Remove TV") }, text = { Text("Remove \"${connection.name}\"?") },
+        confirmButton = { TextButton(onClick = { onDelete(); showDelete = false }) { Text("Remove", color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } })
 }
 
 @Composable
-private fun RenameDialog(
-    currentName: String,
-    onConfirm: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
+private fun RenameDialog(currentName: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf(currentName) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Rename TV") },
-        text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("TV name") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { onConfirm(name) })
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(name) }, enabled = name.isNotBlank()) { Text("Save") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    )
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Rename TV") }, text = {
+        OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("TV name") }, singleLine = true, keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { onConfirm(name) }))
+    }, confirmButton = { TextButton(onClick = { onConfirm(name) }, enabled = name.isNotBlank()) { Text("Save") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }
